@@ -6,6 +6,8 @@ import '../api/stremio_service.dart';
 import '../api/debrid_api.dart';
 import '../services/jackett_service.dart';
 import '../services/prowlarr_service.dart';
+import '../services/app_updater_service.dart';
+import '../widgets/update_dialog.dart';
 import '../utils/app_theme.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -47,6 +49,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isRDLoggedIn = false;
   String? _rdUserCode;
   Timer? _rdPollTimer;
+  
+  bool _isCheckingUpdate = false;
+  final AppUpdaterService _updater = AppUpdaterService();
 
   @override
   void initState() {
@@ -263,10 +268,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     if (_debridService == 'Real-Debrid') _buildRDLogin(),
                     if (_debridService == 'TorBox') _buildTorBoxConfig(),
+                    const SizedBox(height: 32),
+                    _buildSectionHeader('App Updates'),
+                    _buildUpdateChecker(),
                     const SizedBox(height: 64),
                     const Center(
                       child: Text(
-                        'PlayTorrio Native v1.1.0',
+                        'PlayTorrio Native v1.0.0',
                         style: TextStyle(color: Colors.white24, fontSize: 12, letterSpacing: 2, fontWeight: FontWeight.bold),
                       ),
                     ),
@@ -737,6 +745,100 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Prowlarr settings saved!')),
       );
+    }
+  }
+  
+  Widget _buildUpdateChecker() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Check for new versions of PlayTorrio',
+            style: TextStyle(fontSize: 14, color: Colors.white70),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _isCheckingUpdate ? null : _checkForUpdates,
+              icon: _isCheckingUpdate
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.system_update_rounded),
+              label: Text(
+                _isCheckingUpdate ? 'Checking...' : 'Check for Updates',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primaryColor,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Future<void> _checkForUpdates() async {
+    setState(() => _isCheckingUpdate = true);
+    
+    try {
+      final updateInfo = await _updater.checkForUpdates();
+      
+      if (mounted) {
+        setState(() => _isCheckingUpdate = false);
+        
+        if (updateInfo != null) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => UpdateDialog(updateInfo: updateInfo),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Row(
+                children: [
+                  Icon(Icons.check_circle, color: Colors.green),
+                  SizedBox(width: 12),
+                  Text('You\'re running the latest version!'),
+                ],
+              ),
+              backgroundColor: Colors.green.withValues(alpha: 0.2),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isCheckingUpdate = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to check for updates: $e'),
+            backgroundColor: Colors.red.withValues(alpha: 0.2),
+          ),
+        );
+      }
     }
   }
 

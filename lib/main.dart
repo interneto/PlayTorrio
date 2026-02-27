@@ -15,8 +15,10 @@ import 'api/local_server_service.dart';
 import 'api/music_player_service.dart';
 import 'models/movie.dart';
 import 'services/player_pool_service.dart';
+import 'services/app_updater_service.dart';
 import 'utils/webview_cleanup.dart';
 import 'utils/app_theme.dart';
+import 'widgets/update_dialog.dart';
 
 import 'screens/main_screen.dart';
 import 'screens/search_screen.dart';
@@ -208,6 +210,9 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
     // ignore: unused_local_variable
     const warmupDiscover = DiscoverScreen();
     
+    // Check for updates silently in background
+    _checkForUpdatesInBackground();
+    
     if (mounted) {
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
@@ -218,6 +223,28 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
           transitionDuration: const Duration(milliseconds: 800),
         ),
       );
+    }
+  }
+  
+  Future<void> _checkForUpdatesInBackground() async {
+    try {
+      final updater = AppUpdaterService();
+      final updateInfo = await updater.checkForUpdates();
+      
+      if (updateInfo != null && mounted) {
+        // Wait a bit before showing the dialog so user can see the main screen first
+        await Future.delayed(const Duration(seconds: 3));
+        
+        if (mounted) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => UpdateDialog(updateInfo: updateInfo),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('[Boot] Update check failed: $e');
     }
   }
 

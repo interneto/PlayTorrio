@@ -45,6 +45,8 @@ dependencies:
   transparent_image: ^2.0.1
   xml: ^6.5.0
   archive: ^4.0.4
+  package_info_plus: ^8.1.2
+  ota_update: ^7.1.0
 
 dev_dependencies:
   flutter_test:
