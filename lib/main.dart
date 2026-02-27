@@ -30,11 +30,9 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   // Configure InAppWebView to use writable cache directory (critical for AppImage/Flatpak)
-  if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
-    final cacheDir = await getApplicationCacheDirectory();
+  // Note: setWebContentsDebuggingEnabled is only available on Android/iOS
+  if (Platform.isAndroid || Platform.isIOS) {
     await InAppWebViewController.setWebContentsDebuggingEnabled(true);
-    // Set default cache directory for all webviews
-    PlatformInAppWebViewController.debugLoggingSettings.enabled = false;
   }
   
   Logger.root.level = Level.FINER;
