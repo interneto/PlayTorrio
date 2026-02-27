@@ -315,14 +315,20 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
                   ),
                 ),
               ),
-              Text(
-                'YOUR CINEMA UNIVERSE',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 10,
-                  color: AppTheme.primaryColor.withValues(alpha: 0.6),
-                  fontFamily: 'Poppins',
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    'YOUR CINEMA UNIVERSE',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 10,
+                      color: AppTheme.primaryColor.withValues(alpha: 0.6),
+                      fontFamily: 'Poppins',
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: 100),
