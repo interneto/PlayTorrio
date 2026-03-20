@@ -29,76 +29,74 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   debugPrint('[Boot] Flutter binding initialized');
 
-  try {
-    // Configure InAppWebView to use writable cache directory (critical for AppImage/Flatpak)
-    // Note: setWebContentsDebuggingEnabled is only available on Android/iOS
-    if (Platform.isAndroid || Platform.isIOS) {
+  // Configure InAppWebView (Android only — not supported on iOS)
+  if (Platform.isAndroid) {
+    try {
       debugPrint('[Boot] Setting up InAppWebView...');
       await InAppWebViewController.setWebContentsDebuggingEnabled(true);
       debugPrint('[Boot] InAppWebView OK');
+    } catch (e) {
+      debugPrint('[Boot] InAppWebView setup failed (non-fatal): $e');
     }
-    
-    Logger.root.level = Level.FINER;
-    Logger.root.onRecord.listen((e) {
-      debugPrint('[YT] ${e.message}');
-      if (e.error != null) {
-        debugPrint('[YT ERROR] ${e.error}');
-        debugPrint('[YT STACK] ${e.stackTrace}');
-      }
-    });
-    
-    if (Platform.isAndroid) {
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-      await SystemChrome.setPreferredOrientations([
-        DeviceOrientation.portraitUp,
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
-    }
-
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      await windowManager.ensureInitialized();
-
-      WindowOptions windowOptions = const WindowOptions(
-        size: Size(1600, 1000),
-        center: true,
-        backgroundColor: Colors.transparent,
-        skipTaskbar: false,
-        titleBarStyle: TitleBarStyle.normal,
-      );
-      
-      await windowManager.waitUntilReadyToShow(windowOptions, () async {
-        await windowManager.show();
-        await windowManager.focus();
-      });
-    }
-    
-    debugPrint('[Boot] Initializing MediaKit...');
-    MediaKit.ensureInitialized();
-    debugPrint('[Boot] MediaKit OK');
-    
-    debugPrint('[Boot] Initializing AudioService...');
-    final audioHandler = await AudioService.init(
-      builder: () => PlayTorrioAudioHandler(MusicPlayerService().player),
-      config: const AudioServiceConfig(
-        androidNotificationChannelId: 'com.playtorrio.native.channel.audio',
-        androidNotificationChannelName: 'Music Playback',
-        androidNotificationOngoing: false,
-        androidStopForegroundOnPause: false,
-        androidResumeOnClick: true,
-      ),
-    );
-    debugPrint('[Boot] AudioService OK');
-    
-    MusicPlayerService().setHandler(audioHandler);
-    AudiobookPlayerService().init(audioHandler);
-    
-    PlayerPoolService().warmUp();
-    debugPrint('[Boot] All init complete — launching app');
-  } catch (e, st) {
-    debugPrint('[Boot] FATAL ERROR during init: $e');
-    debugPrint('[Boot] Stack trace: $st');
   }
+  
+  Logger.root.level = Level.FINER;
+  Logger.root.onRecord.listen((e) {
+    debugPrint('[YT] ${e.message}');
+    if (e.error != null) {
+      debugPrint('[YT ERROR] ${e.error}');
+      debugPrint('[YT STACK] ${e.stackTrace}');
+    }
+  });
+  
+  if (Platform.isAndroid) {
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+  }
+
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    await windowManager.ensureInitialized();
+
+    WindowOptions windowOptions = const WindowOptions(
+      size: Size(1600, 1000),
+      center: true,
+      backgroundColor: Colors.transparent,
+      skipTaskbar: false,
+      titleBarStyle: TitleBarStyle.normal,
+    );
+    
+    await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.show();
+      await windowManager.focus();
+    });
+  }
+  
+  debugPrint('[Boot] Initializing MediaKit...');
+  MediaKit.ensureInitialized();
+  debugPrint('[Boot] MediaKit OK');
+  
+  debugPrint('[Boot] Initializing AudioService...');
+  final audioHandler = await AudioService.init(
+    builder: () => PlayTorrioAudioHandler(MusicPlayerService().player),
+    config: const AudioServiceConfig(
+      androidNotificationChannelId: 'com.playtorrio.native.channel.audio',
+      androidNotificationChannelName: 'Music Playback',
+      androidNotificationOngoing: false,
+      androidStopForegroundOnPause: false,
+      androidResumeOnClick: true,
+    ),
+  );
+  debugPrint('[Boot] AudioService OK');
+  
+  MusicPlayerService().setHandler(audioHandler);
+  AudiobookPlayerService().init(audioHandler);
+  
+  PlayerPoolService().warmUp();
+  debugPrint('[Boot] All init complete — launching app');
 
   runApp(const PlayTorrioApp());
 }
