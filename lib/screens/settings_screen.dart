@@ -395,7 +395,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const SizedBox(height: 64),
                     const Center(
                       child: Text(
-                        'PlayTorrio Native v1.0.7',
+                        'PlayTorrio Native v1.0.8',
                         style: TextStyle(color: Colors.white24, fontSize: 12, letterSpacing: 2, fontWeight: FontWeight.bold),
                       ),
                     ),
@@ -436,11 +436,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         fileName: fileName,
         type: FileType.custom,
         allowedExtensions: ['json'],
+        bytes: Uint8List.fromList(utf8.encode(jsonStr)),
       );
 
       if (result != null) {
-        // saveFile() only returns the path on desktop — we must write the file ourselves
-        await File(result).writeAsString(jsonStr);
+        // On desktop, saveFile() returns a path but doesn't write — we must do it ourselves
+        if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+          await File(result).writeAsString(jsonStr);
+        }
       }
 
       await tempFile.delete();
