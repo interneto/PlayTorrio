@@ -17,10 +17,8 @@ import 'api/local_server_service.dart';
 import 'api/music_player_service.dart';
 import 'models/movie.dart';
 import 'services/player_pool_service.dart';
-import 'services/app_updater_service.dart';
 import 'utils/webview_cleanup.dart';
 import 'utils/app_theme.dart';
-import 'widgets/update_dialog.dart';
 
 import 'screens/main_screen.dart';
 import 'screens/search_screen.dart';
@@ -280,9 +278,6 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
     const warmupDiscover = DiscoverScreen();
     debugPrint('[Boot] ✓ Screens pre-warmed');
     
-    debugPrint('[Boot] Step 5: Checking for updates in background...');
-    _checkForUpdatesInBackground();
-    
     if (mounted) {
       debugPrint('[Boot] Step 6: Navigating to MainScreen...');
       Navigator.of(context).pushReplacement(
@@ -300,34 +295,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
     }
   }
   
-  Future<void> _checkForUpdatesInBackground() async {
-    try {
-      debugPrint('[Boot] Checking for app updates...');
-      final updater = AppUpdaterService();
-      final updateInfo = await updater.checkForUpdates();
-      
-      if (updateInfo != null) {
-        debugPrint('[Boot] ✓ Update available: v${updateInfo.latestVersion}');
-        if (mounted) {
-          // Wait a bit before showing the dialog so user can see the main screen first
-          await Future.delayed(const Duration(seconds: 3));
-          
-          if (mounted) {
-            debugPrint('[Boot] Showing update dialog...');
-            showDialog(
-              context: context,
-              barrierDismissible: false,
-              builder: (context) => UpdateDialog(updateInfo: updateInfo),
-            );
-          }
-        }
-      } else {
-        debugPrint('[Boot] ✓ App is up to date');
-      }
-    } catch (e) {
-      debugPrint('[Boot] ✗ Update check failed: $e');
-    }
-  }
+
 
   @override
   void dispose() {
