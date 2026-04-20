@@ -2643,7 +2643,7 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
               onPressed: _showSubtitlesMenu,
             ),
             // Show sources button for providers with multiple sources
-            if ((_currentProvider == 'amri' || _currentProvider == 'webstreamr' || _currentProvider == 'arabic') && _currentSources != null && _currentSources!.isNotEmpty) ...[
+            if (_currentSources != null && _currentSources!.length > 1) ...[
               const SizedBox(width: 8),
               GlassIconButton(
                 icon: Icons.video_library_outlined,

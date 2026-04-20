@@ -570,7 +570,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const SizedBox(height: 40),
                     const Center(
                       child: Text(
-                        'PlayTorrio Native v1.1.5',
+                        'PlayTorrio Native v1.1.6',
                         style: TextStyle(color: Colors.white24, fontSize: 12, letterSpacing: 2, fontWeight: FontWeight.bold),
                       ),
                     ),

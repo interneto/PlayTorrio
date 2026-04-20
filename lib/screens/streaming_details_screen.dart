@@ -6,7 +6,7 @@ import '../api/tmdb_api.dart';
 import '../api/stream_extractor.dart';
 import '../api/stremio_service.dart';
 import '../api/stream_providers.dart';
-import '../api/webstreamr_service.dart';
+import '../api/nexvid_service.dart';
 import '../widgets/loading_overlay.dart';
 import '../services/episode_watched_service.dart';
 import '../widgets/movie_atmosphere.dart';
@@ -36,7 +36,6 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
   String? _statusMessage;
   final StreamExtractor _extractor = StreamExtractor();
   final StremioService _stremio = StremioService();
-  final WebStreamrService _webStreamr = WebStreamrService();
   final TmdbApi _api = TmdbApi();
   late Movie _movie;
   bool _isLoading = true;
@@ -215,44 +214,48 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
 
     bool found = false;
 
-    // 1. Try WebStreamr first if IMDB ID is available
-    if (_movie.imdbId != null && _movie.imdbId!.isNotEmpty) {
-      setState(() => _statusMessage = 'Searching WebStreamr...');
+    // ── 1) NexVid scraped sources (Alpha/Beta/Gamma/Delta) ───────────────
+    // Fast path: single HTTP call per source, no WebView needed.
+    if (!found && !_extractionCancelled && mounted) {
+      setState(() => _statusMessage = 'Searching NexVid sources...');
       try {
-        final webStreamrSources = await _webStreamr.getStreams(
-          imdbId: _movie.imdbId!,
-          isMovie: _movie.mediaType == 'movie',
-          season: _selectedSeason,
-          episode: _selectedEpisode,
+        final nexvid = NexVidService();
+        final year = _movie.releaseDate.isNotEmpty
+            ? _movie.releaseDate.split('-').first
+            : '';
+        final result = await nexvid.extract(
+          tmdbId: _movie.id.toString(),
+          title: _movie.title,
+          year: year,
+          isMovie: _movie.mediaType != 'tv',
+          season: _movie.mediaType == 'tv' ? _selectedSeason : null,
+          episode: _movie.mediaType == 'tv' ? _selectedEpisode : null,
         );
-
-        if (_extractionCancelled) return;
-        if (webStreamrSources.isNotEmpty) {
+        if (!_extractionCancelled && result != null && mounted) {
           found = true;
-          if (mounted && !_extractionCancelled) {
-            if (Navigator.canPop(context)) Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => PlayerScreen(
-                  streamUrl: webStreamrSources.first.url,
-                  title: _movie.mediaType == 'tv' 
-                      ? '${_movie.title} - S$_selectedSeason E$_selectedEpisode' 
-                      : _movie.title,
-                  movie: _movie,
-                  providers: _providers,
-                  activeProvider: 'webstreamr',
-                  selectedSeason: _movie.mediaType == 'tv' ? _selectedSeason : null,
-                  selectedEpisode: _movie.mediaType == 'tv' ? _selectedEpisode : null,
-                  startPosition: widget.startPosition,
-                  sources: webStreamrSources,
-                ),
+          if (Navigator.canPop(context)) Navigator.pop(context);
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PlayerScreen(
+                streamUrl: result.primaryUrl,
+                title: _movie.mediaType == 'tv'
+                    ? '${_movie.title} - S$_selectedSeason E$_selectedEpisode'
+                    : _movie.title,
+                headers: result.headers,
+                movie: _movie,
+                providers: _providers,
+                activeProvider: 'nexvid_${result.sourceId}',
+                selectedSeason: _movie.mediaType == 'tv' ? _selectedSeason : null,
+                selectedEpisode: _movie.mediaType == 'tv' ? _selectedEpisode : null,
+                startPosition: widget.startPosition,
+                sources: result.streamSources,
               ),
-            );
-          }
+            ),
+          );
         }
       } catch (e) {
-        debugPrint('Error fetching from WebStreamr: $e');
+        debugPrint('[StreamExtractor] NexVid error: $e');
       }
     }
 
@@ -261,8 +264,7 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
 
       for (var key in providerKeys) {
         if (!mounted || _extractionCancelled) break;
-        if (key == 'webstreamr') continue; // Already tried directly
-        
+
         final provider = _providers[key];
         
         final String url;

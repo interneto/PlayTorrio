@@ -2978,7 +2978,7 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
                 size: btnSize, iconSize: iconSz,
               ),
               // Show sources button for providers with multiple sources
-              if ((_currentProvider == 'amri' || _currentProvider == 'webstreamr' || _currentProvider == 'arabic') && _currentSources != null && _currentSources!.isNotEmpty) ...[
+              if (_currentSources != null && _currentSources!.length > 1) ...[
                 SizedBox(width: gap),
                 _GlassIconButton(
                   icon: Icons.video_library_outlined,
