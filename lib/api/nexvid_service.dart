@@ -8,10 +8,19 @@ import '../models/stream_source.dart';
 /// HLS / MP4 stream URLs from their server-scraped sources.
 ///
 /// Provider catalogue (Greek alias -> source id, type, rank):
-///   Alpha   febbox             source 1000   (requires FebBox cookie)
-///   Beta    pobreflix          source  950   HLS
+///   Alpha   febbox             source 1000   HLS + MP4 (direct shegu.net)
 ///   Gamma   02moviedownloader  source  900   multi-quality MP4 map
-///   Delta   streammafia        source  850   HLS
+///
+/// NOTE: `streammafia` was removed from nexvid.online on ~Nov 2024.
+/// `pobreflix` was dropped on our side because its stream URLs route
+/// through `oneproxy.1x2.space` → `nexvid.online/api/hls-proxy`, and
+/// that proxy chain returns 403 unpredictably (Cloudflare / per-IP rate
+/// limit). FebBox already covers every quality tier, so pobreflix was
+/// just noise. Re-add it if nexvid ever exposes it as a direct URL.
+///
+/// The newer sources they added (zxcstream, cinesrc, vidking, vidfast,
+/// videasy, vidsync, vidlink, peachify) are embed-only iframes and do
+/// not work through `/api/stream` — they all return HTTP 400.
 ///
 /// Embed-only providers (Epsilon..Omega) are NOT handled here — they are
 /// plain iframe URLs and belong in [StreamProviders].
@@ -28,9 +37,7 @@ class NexVidService {
   /// Each entry: (sourceId, displayName).
   static const List<List<String>> sources = [
     ['febbox', 'NexVid Alpha (FebBox)'],
-    ['pobreflix', 'NexVid Beta (Pobreflix)'],
     ['02moviedownloader', 'NexVid Gamma (02movie)'],
-    ['streammafia', 'NexVid Delta (StreamMafia)'],
   ];
 
   /// Result returned by [extract].
@@ -163,30 +170,34 @@ class NexVidService {
     final type = data['type']?.toString() ?? '';
     final upstreamHeaders = _toStringMap(data['headers']);
 
-    // Replay any upstream headers via NexVid's HLS proxy so segments work.
-    Map<String, String> playbackHeaders = {
+    // Default playback headers (used when the upstream didn't supply any —
+    // and when we route through NexVid's /api/hls-proxy, which enforces a
+    // nexvid.online Referer server-side).
+    final Map<String, String> nexvidProxyHeaders = {
       'Referer': '$_baseUrl/',
       'User-Agent': headers['User-Agent']!,
     };
 
+    // ── type: 'hls' → single playlist URL, wrap via /api/hls-proxy ────
     if (type == 'hls') {
       final original = (data['playlist'] ?? data['url'] ?? '').toString();
       if (original.isEmpty) return null;
       final proxied = _wrapHlsProxy(original, upstreamHeaders);
+      final src = StreamSource(
+        url: proxied,
+        title: '$label · HLS',
+        type: 'video',
+        headers: nexvidProxyHeaders,
+      );
       return NexVidResult(
         sourceId: sourceId,
         primaryUrl: proxied,
-        headers: playbackHeaders,
-        streamSources: [
-          StreamSource(
-            url: proxied,
-            title: '$label · HLS',
-            type: 'video',
-          ),
-        ],
+        headers: nexvidProxyHeaders,
+        streamSources: [src],
       );
     }
 
+    // ── type: 'file' → Map<quality, {url, headers}> (direct upstream) ─
     if (type == 'file') {
       final qualities = data['qualities'];
       if (qualities is! Map) return null;
@@ -201,17 +212,75 @@ class NexVidService {
         });
       if (entries.isEmpty) return null;
       final list = entries.map((e) {
+        final perQualityHeaders = _toStringMap((e.value as Map)['headers']);
+        // Per-quality headers carry the exact UA the upstream expects
+        // (e.g. 02moviedownloader requires a Chromium-on-Linux UA).
+        // Fall back to the source-level upstream headers, then to ours.
+        final effective = perQualityHeaders.isNotEmpty
+            ? perQualityHeaders
+            : (upstreamHeaders.isNotEmpty ? upstreamHeaders : nexvidProxyHeaders);
         return StreamSource(
           url: (e.value['url'] as String).toString(),
           title: '$label · ${e.key}p',
           type: 'video',
+          headers: effective,
         );
       }).toList();
       return NexVidResult(
         sourceId: sourceId,
         primaryUrl: list.first.url,
-        headers: playbackHeaders,
+        headers: list.first.headers ?? nexvidProxyHeaders,
         streamSources: list,
+      );
+    }
+
+    // ── No `type` field → new FebBox shape: qualities is a List of
+    //    { url, quality, label } with direct HLS URLs on hls.shegu.net.
+    //    These don't need the nexvid hls-proxy — they're already signed.
+    final rawQualities = data['qualities'];
+    if (rawQualities is List && rawQualities.isNotEmpty) {
+      final shegu = <StreamSource>[];
+      // Direct shegu.net URLs — pass the upstream UA/Referer if provided,
+      // otherwise send a Chrome-desktop UA (what the website uses).
+      final directHeaders = upstreamHeaders.isNotEmpty
+          ? upstreamHeaders
+          : {
+              'User-Agent': headers['User-Agent']!,
+              'Referer': 'https://www.febbox.com/',
+            };
+      // Preserve API-provided order but boost 4K/2160 first, then numeric desc.
+      int rankFor(String q) {
+        final s = q.toLowerCase().trim();
+        if (s == '4k' || s.contains('2160')) return 2160;
+        if (s == '2k' || s.contains('1440')) return 1440;
+        if (s.contains('1080')) return 1080;
+        if (s.contains('720')) return 720;
+        if (s.contains('480')) return 480;
+        if (s.contains('360')) return 360;
+        return int.tryParse(RegExp(r'\d+').stringMatch(s) ?? '') ?? 0;
+      }
+      final entries = rawQualities
+          .whereType<Map>()
+          .where((m) => (m['url'] ?? '').toString().isNotEmpty)
+          .toList()
+        ..sort((a, b) => rankFor(b['quality']?.toString() ?? '')
+            .compareTo(rankFor(a['quality']?.toString() ?? '')));
+      for (final q in entries) {
+        final url = q['url'].toString();
+        final quality = (q['quality'] ?? q['label'] ?? '').toString();
+        shegu.add(StreamSource(
+          url: url,
+          title: quality.isEmpty ? label : '$label · $quality',
+          type: 'video',
+          headers: directHeaders,
+        ));
+      }
+      if (shegu.isEmpty) return null;
+      return NexVidResult(
+        sourceId: sourceId,
+        primaryUrl: shegu.first.url,
+        headers: shegu.first.headers ?? nexvidProxyHeaders,
+        streamSources: shegu,
       );
     }
 

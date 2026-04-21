@@ -59,14 +59,32 @@ void main() async {
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     await windowManager.ensureInitialized();
 
-    WindowOptions windowOptions = const WindowOptions(
-      size: Size(1600, 1000),
+    // Size the window to fit the user's primary display. On a 1366×768
+    // laptop the old fixed 1600×1000 was bigger than the screen, so the
+    // title bar / close button / fullscreen toggle fell off-screen.
+    // We clamp the default to the display's work area minus a small
+    // margin, and set a reasonable minimum so tiny screens still work.
+    const double desiredWidth = 1600;
+    const double desiredHeight = 1000;
+    const double screenMargin = 80; // leaves room for taskbar + title bar
+    final display = WidgetsBinding.instance.platformDispatcher.displays.first;
+    final logicalScreen = display.size / display.devicePixelRatio;
+    final double maxW = (logicalScreen.width - screenMargin).clamp(640.0, double.infinity);
+    final double maxH = (logicalScreen.height - screenMargin).clamp(480.0, double.infinity);
+    final Size windowSize = Size(
+      desiredWidth.clamp(640.0, maxW),
+      desiredHeight.clamp(480.0, maxH),
+    );
+
+    final WindowOptions windowOptions = WindowOptions(
+      size: windowSize,
+      minimumSize: const Size(640, 480),
       center: true,
       backgroundColor: Colors.transparent,
       skipTaskbar: false,
       titleBarStyle: TitleBarStyle.normal,
     );
-    
+
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
       await windowManager.show();
       await windowManager.focus();
@@ -134,15 +152,12 @@ class _PlayTorrioAppState extends State<PlayTorrioApp> with WidgetsBindingObserv
 
   @override
   void onWindowClose() async {
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      bool isPreventClose = await windowManager.isPreventClose();
-      if (isPreventClose) {
-        await PlayerPoolService().dispose();
-        await TorrentStreamService().cleanup();
-        await WebViewCleanup.cleanupWebView2Cache();
-        await windowManager.destroy();
-      }
-    }
+    if (!(Platform.isWindows || Platform.isLinux || Platform.isMacOS)) return;
+    final bool isPreventClose = await windowManager.isPreventClose();
+    if (!isPreventClose) return;
+    // Just die. No cleanup, no waiting on libtorrent / media_kit / webview.
+    // The OS reclaims everything.
+    exit(0);
   }
 
   @override
