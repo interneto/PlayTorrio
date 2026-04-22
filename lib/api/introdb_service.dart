@@ -168,7 +168,7 @@ class IntroDbService {
   /// The fallback returns each segment type as a single object (or null),
   /// with start_ms/end_ms fields.
   IntroDbResponse _parseFallbackResponse(Map<String, dynamic> json) {
-    IntroDbTimestamp? _parseSegment(dynamic seg) {
+    IntroDbTimestamp? parseSegment(dynamic seg) {
       if (seg == null || seg is! Map<String, dynamic>) return null;
       // Prefer start_ms/end_ms; fall back to start_sec/end_sec * 1000
       int? startMs = seg['start_ms'] as int?;
@@ -183,10 +183,10 @@ class IntroDbService {
       return IntroDbTimestamp(startMs: startMs, endMs: endMs);
     }
 
-    final intro = _parseSegment(json['intro']);
-    final recap = _parseSegment(json['recap']);
+    final intro = parseSegment(json['intro']);
+    final recap = parseSegment(json['recap']);
     // introdb.app calls it "outro"; map to "credits"
-    final credits = _parseSegment(json['outro']);
+    final credits = parseSegment(json['outro']);
 
     return IntroDbResponse(
       tmdbId: 0, // not available from this API

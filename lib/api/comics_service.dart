@@ -234,7 +234,7 @@ class ComicsService {
       // Extract outer replace rules from the decoder function body:
       //   function <fname>(z, l) { l = l.replace(/X/g, 'Y'); ... return baeu(l, '<base>'); }
       final funcBodyMatch = RegExp(
-        'function\\s+' + RegExp.escape(funcName) + r'\s*\(\s*z\s*,\s*l\s*\)\s*\{([\s\S]*?)\}',
+        'function\\s+${RegExp.escape(funcName)}\\s*\\(\\s*z\\s*,\\s*l\\s*\\)\\s*\\{([\\s\\S]*?)\\}',
       ).firstMatch(html);
       final outerRules = <List<String>>[];
       String baseUrl = 'https://ano1.rconet.biz/pic';

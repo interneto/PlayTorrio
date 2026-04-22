@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class DebridFile {
   final String filename;
@@ -17,88 +16,81 @@ class DebridApi {
   factory DebridApi() => _instance;
   DebridApi._internal();
 
-  final _storage = const FlutterSecureStorage();
-  final String _rdClientId = "X245A4XAIBGVM";
+  // Use EncryptedSharedPreferences on Android. The default flutter_secure_storage
+  // backend on Android stores data with a Keystore-wrapped key that can become
+  // unreadable across app restarts (BadPaddingException / null reads), which
+  // causes saved tokens to "disappear" until the user logs in again. The
+  // EncryptedSharedPreferences backend is the recommended, more reliable option.
+  static const _aOptions = AndroidOptions(encryptedSharedPreferences: true);
+  final _storage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
 
-  // --- Real-Debrid OAuth ---
-
-  Future<Map<String, dynamic>?> startRDLogin() async {
-    final url = 'https://api.real-debrid.com/oauth/v2/device/code?client_id=$_rdClientId&new_credentials=yes';
-    final response = await http.get(Uri.parse(url));
-    
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      final verifyUrl = data['verification_url'];
-      if (await canLaunchUrl(Uri.parse(verifyUrl))) {
-        await launchUrl(Uri.parse(verifyUrl), mode: LaunchMode.externalApplication);
-      }
-      return data;
+  Future<String?> _safeRead(String key) async {
+    try {
+      return await _storage.read(key: key, aOptions: _aOptions);
+    } catch (_) {
+      try {
+        await _storage.delete(key: key, aOptions: _aOptions);
+      } catch (_) {}
+      return null;
     }
-    return null;
   }
 
-  Future<bool> pollRDCredentials(String deviceCode) async {
-    final url = 'https://api.real-debrid.com/oauth/v2/device/credentials?client_id=$_rdClientId&code=$deviceCode';
-    final response = await http.get(Uri.parse(url));
+  // --- Real-Debrid (private API token) ---
+  //
+  // RD exposes a personal, long-lived API token at
+  //   https://real-debrid.com/apitoken
+  // which is used directly as `Authorization: Bearer <token>`. This avoids the
+  // OAuth device flow (and its 1h access-token expiry) entirely, so the login
+  // never silently disappears across restarts.
 
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      await _storage.write(key: 'rd_client_id', value: data['client_id']);
-      await _storage.write(key: 'rd_client_secret', value: data['client_secret']);
-      
-      // Now exchange for token
-      return await _exchangeRDToken(deviceCode, data['client_id'], data['client_secret']);
+  static const String _rdTokenKey = 'rd_access_token';
+
+  Future<void> saveRDApiKey(String key) async {
+    final trimmed = key.trim();
+    if (trimmed.isEmpty) {
+      await logoutRD();
+      return;
     }
-    return false;
-  }
-
-  Future<bool> _exchangeRDToken(String deviceCode, String clientId, String clientSecret) async {
-    final url = 'https://api.real-debrid.com/oauth/v2/token';
-    final response = await http.post(
-      Uri.parse(url),
-      body: {
-        'client_id': clientId,
-        'client_secret': clientSecret,
-        'code': deviceCode,
-        'grant_type': 'http://oauth.net/grant_type/device/1.0',
-      },
-    );
-
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      await _saveRDToken(data);
-      return true;
-    }
-    return false;
-  }
-
-  Future<void> _saveRDToken(Map<String, dynamic> data) async {
-    await _storage.write(key: 'rd_access_token', value: data['access_token']);
-    await _storage.write(key: 'rd_refresh_token', value: data['refresh_token']);
-    final expiry = DateTime.now().add(Duration(seconds: data['expires_in']));
-    await _storage.write(key: 'rd_token_expiry', value: expiry.toIso8601String());
+    await _storage.write(key: _rdTokenKey, value: trimmed, aOptions: _aOptions);
   }
 
   Future<String?> getRDAccessToken() async {
-    final token = await _storage.read(key: 'rd_access_token');
-    final expiryStr = await _storage.read(key: 'rd_token_expiry');
-    
-    if (token == null || expiryStr == null) return null;
+    return await _safeRead(_rdTokenKey);
+  }
 
-    final expiry = DateTime.parse(expiryStr);
-    if (DateTime.now().isAfter(expiry.subtract(const Duration(minutes: 5)))) {
-      // Refresh token logic here if needed
-      return token; // For now return current
-    }
-    return token;
+  /// Verifies the stored token by hitting RD's `/user` endpoint.
+  /// Returns the user JSON on success, or null on failure.
+  Future<Map<String, dynamic>?> verifyRDApiKey(String key) async {
+    final trimmed = key.trim();
+    if (trimmed.isEmpty) return null;
+    try {
+      final res = await http.get(
+        Uri.parse('https://api.real-debrid.com/rest/1.0/user'),
+        headers: {'Authorization': 'Bearer $trimmed'},
+      );
+      if (res.statusCode == 200) {
+        return json.decode(res.body) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<void> logoutRD() async {
-    await _storage.delete(key: 'rd_access_token');
-    await _storage.delete(key: 'rd_refresh_token');
-    await _storage.delete(key: 'rd_token_expiry');
-    await _storage.delete(key: 'rd_client_id');
-    await _storage.delete(key: 'rd_client_secret');
+    // Clean up the current key plus any leftovers from the old OAuth flow so
+    // upgrading users don't end up with stale credentials.
+    for (final key in [
+      _rdTokenKey,
+      'rd_refresh_token',
+      'rd_token_expiry',
+      'rd_client_id',
+      'rd_client_secret',
+    ]) {
+      try {
+        await _storage.delete(key: key, aOptions: _aOptions);
+      } catch (_) {}
+    }
   }
 
   // --- Real-Debrid Flow ---
@@ -167,11 +159,11 @@ class DebridApi {
   // --- TorBox Flow ---
 
   Future<void> saveTorBoxKey(String key) async {
-    await _storage.write(key: 'torbox_api_key', value: key);
+    await _storage.write(key: 'torbox_api_key', value: key, aOptions: _aOptions);
   }
 
   Future<String?> getTorBoxKey() async {
-    return await _storage.read(key: 'torbox_api_key');
+    return await _safeRead('torbox_api_key');
   }
 
   Future<List<DebridFile>> resolveTorBox(String magnet) async {

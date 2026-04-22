@@ -58,8 +58,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _prowlarrTestResult;
   
   bool _isRDLoggedIn = false;
-  String? _rdUserCode;
-  Timer? _rdPollTimer;
+  final TextEditingController _rdController = TextEditingController();
+  bool _isVerifyingRD = false;
   
   // Trakt
   final TraktService _trakt = TraktService();
@@ -247,7 +247,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _prowlarrUrlController.dispose();
     _prowlarrApiKeyController.dispose();
     _mdblistApiKeyController.dispose();
-    _rdPollTimer?.cancel();
+    _rdController.dispose();
     _traktPollTimer?.cancel();
     _simklPollTimer?.cancel();
     _jackett.dispose();
@@ -255,49 +255,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
-  void _startRDLogin() async {
-    final data = await _debrid.startRDLogin();
-    if (data != null) {
-      final userCode = data['user_code'];
-      setState(() {
-        _rdUserCode = userCode;
-      });
-
-      await Clipboard.setData(ClipboardData(text: userCode));
+  Future<void> _saveRDApiKey() async {
+    final key = _rdController.text.trim();
+    if (key.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Code $userCode copied to clipboard!')),
+          const SnackBar(content: Text('Please enter an API key')),
         );
       }
-
-      _rdPollTimer?.cancel();
-      _rdPollTimer = Timer.periodic(Duration(seconds: data['interval']), (timer) async {
-        final success = await _debrid.pollRDCredentials(data['device_code']);
-        if (success) {
-          timer.cancel();
-          setState(() {
-            _rdUserCode = null;
-            _isRDLoggedIn = true;
-          });
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Real-Debrid Login Successful!')));
-          }
-        }
-      });
-
-      Future.delayed(Duration(seconds: data['expires_in']), () {
-        if (_rdPollTimer?.isActive ?? false) {
-          _rdPollTimer?.cancel();
-          setState(() => _rdUserCode = null);
-        }
-      });
+      return;
     }
+
+    setState(() => _isVerifyingRD = true);
+    final user = await _debrid.verifyRDApiKey(key);
+    if (user == null) {
+      if (mounted) {
+        setState(() => _isVerifyingRD = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invalid Real-Debrid API key')),
+        );
+      }
+      return;
+    }
+
+    await _debrid.saveRDApiKey(key);
+    if (!mounted) return;
+    setState(() {
+      _isRDLoggedIn = true;
+      _isVerifyingRD = false;
+      _rdController.clear();
+    });
+    final username = user['username']?.toString() ?? 'Real-Debrid';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Logged in as $username')),
+    );
   }
 
   void _logoutRD() async {
     await _debrid.logoutRD();
     setState(() {
       _isRDLoggedIn = false;
+      _rdController.clear();
     });
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Logged out of Real-Debrid')));
@@ -570,7 +568,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const SizedBox(height: 40),
                     const Center(
                       child: Text(
-                        'PlayTorrio Native v1.1.7',
+                        'PlayTorrio Native v1.1.8',
                         style: TextStyle(color: Colors.white24, fontSize: 12, letterSpacing: 2, fontWeight: FontWeight.bold),
                       ),
                     ),
@@ -1083,32 +1081,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
             )
-          else if (_rdUserCode != null) ...[
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(12)),
-              child: Column(
-                children: [
-                  const Text('Enter this code at real-debrid.com/device:'),
-                  const SizedBox(height: 8),
-                  Text(_rdUserCode!, style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: AppTheme.primaryColor, letterSpacing: 4)),
-                  const SizedBox(height: 8),
-                  const LinearProgressIndicator(color: AppTheme.primaryColor, backgroundColor: Colors.white10),
-                ],
+          else ...[
+            const Text('API Key', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _rdController,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                      hintText: 'Enter Real-Debrid API Key',
+                      filled: true,
+                      fillColor: Colors.white.withValues(alpha: 0.05),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                ElevatedButton(
+                  onPressed: _isVerifyingRD ? null : _saveRDApiKey,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.primaryColor,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: _isVerifyingRD
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Text('Save', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: () async {
+                final url = Uri.parse('https://real-debrid.com/apitoken');
+                if (await canLaunchUrl(url)) {
+                  await launchUrl(url, mode: LaunchMode.externalApplication);
+                }
+              },
+              child: const Text(
+                'Get your API key at real-debrid.com/apitoken',
+                style: TextStyle(color: AppTheme.primaryColor, fontSize: 12, decoration: TextDecoration.underline),
               ),
             ),
-          ] else
-            ElevatedButton.icon(
-              onPressed: _startRDLogin,
-              icon: const Icon(Icons.login),
-              label: const Text('Login with Real-Debrid'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white10,
-                foregroundColor: Colors.white,
-                minimumSize: const Size(double.infinity, 50),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
+          ],
         ],
       ),
     );

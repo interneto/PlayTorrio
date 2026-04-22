@@ -18,7 +18,7 @@ import 'anime_screen.dart';
 import 'arabic_screen.dart';
 import 'live_matches_screen.dart';
 import 'magnet_player_screen.dart';
-import '../features/iptv/screens/iptv_login_screen.dart';
+import '../features/iptv/playtorrio_tv/screens/iptv_pt_screen.dart';
 import '../utils/app_theme.dart';
 import '../api/settings_service.dart';
 import '../services/app_updater_service.dart';
@@ -84,7 +84,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       'mylist':       const MyListScreen(),
       'magnet':       const MagnetPlayerScreen(),
       'live_matches': const LiveMatchesScreen(),
-      'iptv':         const IptvLoginScreen(),
+      'iptv':         const IptvPtScreen(),
       'audiobooks':   const AudiobookScreen(),
       'books':        const BooksScreen(),
       'music':        const MusicScreen(),

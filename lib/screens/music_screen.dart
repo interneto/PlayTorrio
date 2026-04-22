@@ -172,7 +172,6 @@ class _MusicScreenState extends State<MusicScreen> with WidgetsBindingObserver, 
 
   @override
   Widget build(BuildContext context) {
-    final theme = AppTheme.current;
     return Scaffold(
       body: Container(
         decoration: AppTheme.effectiveBackground,

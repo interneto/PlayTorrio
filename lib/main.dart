@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -155,9 +156,35 @@ class _PlayTorrioAppState extends State<PlayTorrioApp> with WidgetsBindingObserv
     if (!(Platform.isWindows || Platform.isLinux || Platform.isMacOS)) return;
     final bool isPreventClose = await windowManager.isPreventClose();
     if (!isPreventClose) return;
-    // Just die. No cleanup, no waiting on libtorrent / media_kit / webview.
-    // The OS reclaims everything.
-    exit(0);
+
+    // Graceful shutdown — calling exit(0) while libtorrent / media_kit (mpv)
+    // / WebView2 native threads are still running races their teardown and
+    // produces the Windows "system error unknown hard error" dialog
+    // (STATUS_ASSERTION_FAILURE in ntdll). Dispose the heavy native plugins
+    // first, then ask windowManager to destroy the window which lets Flutter
+    // shut down its engine cleanly.
+    try {
+      await PlayerPoolService().dispose();
+    } catch (_) {}
+    try {
+      await TorrentStreamService().cleanup();
+    } catch (_) {}
+    try {
+      // Fire-and-forget — WebView2 cache wipe must not block close.
+      unawaited(WebViewCleanup.cleanupWebView2Cache());
+    } catch (_) {}
+
+    // Small grace period so background threads can unwind before the process
+    // image gets torn down.
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    try {
+      await windowManager.setPreventClose(false);
+      await windowManager.destroy();
+    } catch (_) {
+      // Last-resort fallback if windowManager is in a bad state.
+      exit(0);
+    }
   }
 
   @override
