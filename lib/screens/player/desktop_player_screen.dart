@@ -2018,21 +2018,13 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
           if (useDebrid && debridService != 'None') {
             final debrid = DebridApi();
             final files = debridService == 'Real-Debrid'
-                ? await debrid.resolveRealDebrid(magnetLink)
-                : await debrid.resolveTorBox(magnetLink);
+                ? await debrid.resolveRealDebrid(magnetLink,
+                    season: nextSeason, episode: nextEpisode)
+                : await debrid.resolveTorBox(magnetLink,
+                    season: nextSeason, episode: nextEpisode);
             if (files.isNotEmpty) {
-              final s = 'S${nextSeason.toString().padLeft(2, '0')}';
-              final e = 'E${nextEpisode.toString().padLeft(2, '0')}';
-              final match = files.where((f) =>
-                  f.filename.toUpperCase().contains(s) &&
-                  f.filename.toUpperCase().contains(e)).toList();
-              if (match.isNotEmpty) {
-                fileIndex = files.indexOf(match.first);
-                streamUrl = match.first.downloadUrl;
-              } else {
-                files.sort((a, b) => b.filesize.compareTo(a.filesize));
-                streamUrl = files.first.downloadUrl;
-              }
+              fileIndex = 0;
+              streamUrl = files.first.downloadUrl;
             }
           } else {
             streamUrl = await TorrentStreamService().streamTorrent(
@@ -2076,21 +2068,13 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
         if (useDebrid && debridService != 'None') {
           final debrid = DebridApi();
           final files = debridService == 'Real-Debrid'
-              ? await debrid.resolveRealDebrid(magnetLink)
-              : await debrid.resolveTorBox(magnetLink);
+              ? await debrid.resolveRealDebrid(magnetLink,
+                  season: nextSeason, episode: nextEpisode)
+              : await debrid.resolveTorBox(magnetLink,
+                  season: nextSeason, episode: nextEpisode);
           if (files.isNotEmpty) {
-            final sStr = 'S$s';
-            final eStr = 'E$e';
-            final match = files.where((f) =>
-                f.filename.toUpperCase().contains(sStr) &&
-                f.filename.toUpperCase().contains(eStr)).toList();
-            if (match.isNotEmpty) {
-              fileIndex = files.indexOf(match.first);
-              streamUrl = match.first.downloadUrl;
-            } else {
-              files.sort((a, b) => b.filesize.compareTo(a.filesize));
-              streamUrl = files.first.downloadUrl;
-            }
+            fileIndex = 0;
+            streamUrl = files.first.downloadUrl;
           }
         } else {
           streamUrl = await TorrentStreamService().streamTorrent(

@@ -1899,24 +1899,21 @@ class _ContinueWatchingSectionState extends State<_ContinueWatchingSection> {
         if (useDebrid) {
           debugPrint('[Resume] Using debrid service: $debridService');
           if (debridService == 'Real-Debrid') {
-             final files = await DebridApi().resolveRealDebrid(magnetLink);
-             if (fileIndex != null && fileIndex < files.length) {
-               // Use saved file index
-               streamUrl = files[fileIndex].downloadUrl;
-               debugPrint('[Resume] Using file at index $fileIndex: ${files[fileIndex].filename}');
-             } else {
-               // Fallback to largest file
-               files.sort((a, b) => b.filesize.compareTo(a.filesize));
-               if (files.isNotEmpty) streamUrl = files.first.downloadUrl;
+             final files = await DebridApi().resolveRealDebrid(magnetLink,
+                 season: season, episode: episode);
+             if (files.isNotEmpty) {
+               // resolveRealDebrid now returns a single, pre-picked file.
+               streamUrl = files.first.downloadUrl;
+               fileIndex = 0;
+               debugPrint('[Resume] Picked: ${files.first.filename}');
              }
           } else if (debridService == 'TorBox') {
-             final files = await DebridApi().resolveTorBox(magnetLink);
-             if (fileIndex != null && fileIndex < files.length) {
-               streamUrl = files[fileIndex].downloadUrl;
-               debugPrint('[Resume] Using file at index $fileIndex: ${files[fileIndex].filename}');
-             } else {
-               files.sort((a, b) => b.filesize.compareTo(a.filesize));
-               if (files.isNotEmpty) streamUrl = files.first.downloadUrl;
+             final files = await DebridApi().resolveTorBox(magnetLink,
+                 season: season, episode: episode);
+             if (files.isNotEmpty) {
+               streamUrl = files.first.downloadUrl;
+               fileIndex = 0;
+               debugPrint('[Resume] Picked: ${files.first.filename}');
              }
           } else {
              throw Exception("No Debrid service configured");

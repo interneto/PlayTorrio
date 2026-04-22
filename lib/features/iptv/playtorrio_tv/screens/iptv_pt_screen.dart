@@ -1818,9 +1818,15 @@ class _ChannelResultsViewState extends State<_ChannelResultsView> {
                     }
                   });
                 } else {
+                  // Put the tapped hit first so the player actually opens it,
+                  // and keep the rest as failover sources for the watchdog.
+                  final ordered = [
+                    hit,
+                    ...ctrl.channelResults.where((h) => h != hit),
+                  ];
                   Navigator.of(context).push(MaterialPageRoute(
                     builder: (_) => IptvPtPlayerScreen.fromHits(
-                      hits: ctrl.channelResults,
+                      hits: ordered,
                       title: ctrl.activeHardcoded?.name ?? hit.stream.name,
                       logoUrl: hit.stream.icon,
                     ),

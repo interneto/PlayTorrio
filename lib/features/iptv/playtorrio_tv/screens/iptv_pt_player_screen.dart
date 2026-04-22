@@ -117,6 +117,10 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
   // Retry state
   int _retryAttempt = 0;
   DateTime? _lastRecoveryAt;
+  // When the user explicitly paused (so play-after-pause can rejoin live edge)
+  DateTime? _pausedAt;
+  // How long a pause must be before we treat resume as "rejoin live" (full reload)
+  static const Duration _liveRejoinThreshold = Duration(seconds: 2);
   final List<int> _backoffMs = const [500, 1000, 2000, 3000, 4000, 6000, 8000, 8000];
   static const int _maxRetries = 8;
   static const Duration _healthyStreakNeeded = Duration(seconds: 6);
@@ -187,13 +191,20 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
             'reconnect_on_http_error=4xx\\,5xx',
       );
 
-      // Low-latency MPEG-TS demux: skip corrupt frames, regenerate PTS,
-      // small probe so live streams start fast.
+      // Low-latency MPEG-TS / HLS demux. Probesize/analyzeduration must be
+      // big enough for ffmpeg to detect real frame rate & codec params on
+      // junk Xtream streams — too small => wrong fps / laggy decode.
+      //   probesize=5MB, analyzeduration=5s   (mpv low-latency-ish defaults)
+      //   nobuffer + discardcorrupt           — keep latency low, drop junk.
+      // NOTE: HLS-only options (live_start_index, m3u8_hold_counters,
+      // seg_max_retry, max_reload) are NOT set here — when the stream isn't
+      // HLS, libavformat rejects them and mpv prints noisy errors that our
+      // watchdog mistakes for stream failures.
       await p.setProperty(
         'demuxer-lavf-o',
-        'fflags=+nobuffer+discardcorrupt+genpts,'
-            'probesize=500000,'
-            'analyzeduration=1000000',
+        'fflags=+nobuffer+discardcorrupt,'
+            'probesize=5000000,'
+            'analyzeduration=5000000',
       );
     } catch (e) {
       debugPrint('[IPTV Player] tunables failed: $e');
@@ -277,8 +288,20 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
       }
     });
     _errorSub = _player.stream.error.listen((err) {
-      debugPrint('[IPTV Player] error: $err');
-      _triggerRecovery(reason: 'error: $err');
+      final msg = err.toString();
+      debugPrint('[IPTV Player] error: $msg');
+      // Benign mpv chatter we don't want to restart the stream over:
+      //  - "Cannot seek in this stream" / "force-seekable=yes"  → pure-live
+      //    stream, the live-edge seek failed (harmless).
+      //  - "Expected '=' and a value"                          → libav option
+      //    parser warning for HLS-only opts on a non-HLS stream.
+      final lower = msg.toLowerCase();
+      if (lower.contains('cannot seek') ||
+          lower.contains('force-seekable') ||
+          lower.contains("expected '=' and a value")) {
+        return;
+      }
+      _triggerRecovery(reason: 'error: $msg');
     });
   }
 
@@ -293,8 +316,12 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
       );
       await _player.play();
       _userPlayWhenReady = true;
+      _pausedAt = null;
       _lastPos = Duration.zero;
       _lastPosChange = DateTime.now();
+      // For HLS streams that DO expose a DVR window, jump to the live edge
+      // shortly after open so we never replay stale buffered packets.
+      _scheduleJumpToLive();
       // Clear banner after a short successful run
       Future.delayed(const Duration(seconds: 2), () {
         if (!mounted) return;
@@ -305,6 +332,37 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
     } catch (e) {
       _triggerRecovery(reason: 'open failed: $e');
     }
+  }
+
+  /// Best-effort jump to the live edge after a (re)open.
+  /// Only fires when the stream actually exposes a DVR window (seekable=yes
+  /// AND a finite duration). On pure-live streams seeking emits a noisy
+  /// "Cannot seek in this stream / force-seekable=yes" error that the
+  /// watchdog would otherwise treat as a failure.
+  void _scheduleJumpToLive() {
+    Future.delayed(const Duration(milliseconds: 1500), () async {
+      if (!mounted) return;
+      try {
+        final p = _player.platform;
+        if (p is! NativePlayer) return;
+
+        final seekableRaw = await p.getProperty('seekable');
+        final durRaw = await p.getProperty('duration');
+        final isSeekable = seekableRaw.toString().toLowerCase() == 'yes';
+        final dur = double.tryParse(durRaw.toString()) ?? 0.0;
+        if (!isSeekable || dur <= 0) {
+          // Pure live — nothing to seek to.
+          return;
+        }
+
+        // Drop any data that piled up while paused / mid-recovery, then
+        // jump to the live edge of the DVR window.
+        await p.command(['drop-buffers']);
+        await p.command(['seek', '99999', 'absolute']);
+      } catch (_) {
+        // Best-effort — ignore.
+      }
+    });
   }
 
   void _startWatchdog() {
@@ -680,13 +738,25 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
           _RoundIcon(
             icon: _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
             big: true,
-            onTap: () {
+            onTap: () async {
               if (_playing) {
                 _userPlayWhenReady = false;
-                _player.pause();
+                _pausedAt = DateTime.now();
+                await _player.pause();
               } else {
                 _userPlayWhenReady = true;
-                _player.play();
+                final pausedFor = _pausedAt == null
+                    ? Duration.zero
+                    : DateTime.now().difference(_pausedAt!);
+                _pausedAt = null;
+                if (pausedFor >= _liveRejoinThreshold) {
+                  // Long pause on a live stream → buffered data is stale.
+                  // Reload the source so we rejoin at the live edge instead of
+                  // replaying packets from when the user first hit play.
+                  await _openCurrent();
+                } else {
+                  await _player.play();
+                }
               }
               _scheduleHideControls();
             },

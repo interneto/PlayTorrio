@@ -1386,25 +1386,19 @@ class _DetailsScreenState extends State<DetailsScreen> with AtmosphereMixin {
       try {
         if (useDebrid && debridService != 'None') {
           final debrid = DebridApi();
+          final isTv = _movie.mediaType == 'tv';
           final files = debridService == 'Real-Debrid'
-              ? await debrid.resolveRealDebrid(magnet) : await debrid.resolveTorBox(magnet);
+              ? await debrid.resolveRealDebrid(magnet,
+                  season: isTv ? _selectedSeason : null,
+                  episode: isTv ? _selectedEpisode : null)
+              : await debrid.resolveTorBox(magnet,
+                  season: isTv ? _selectedSeason : null,
+                  episode: isTv ? _selectedEpisode : null);
           if (_streamCancelled) return;
           if (files.isNotEmpty) {
-            if (_movie.mediaType == 'tv') {
-              final s = 'S${_selectedSeason.toString().padLeft(2, '0')}';
-              final e = 'E${_selectedEpisode.toString().padLeft(2, '0')}';
-              final match = files.where((f) => f.filename.toUpperCase().contains(s) && f.filename.toUpperCase().contains(e)).toList();
-              if (match.isNotEmpty) {
-                resolvedFileIndex = files.indexOf(match.first);
-                url = match.first.downloadUrl;
-              } else {
-                files.sort((a, b) => b.filesize.compareTo(a.filesize));
-                url = files.first.downloadUrl;
-              }
-            } else {
-              files.sort((a, b) => b.filesize.compareTo(a.filesize));
-              url = files.first.downloadUrl;
-            }
+            // resolveX always returns a single, pre-picked file.
+            resolvedFileIndex = 0;
+            url = files.first.downloadUrl;
           }
         } else {
           url = await TorrentStreamService().streamTorrent(magnet,
@@ -1546,26 +1540,18 @@ class _DetailsScreenState extends State<DetailsScreen> with AtmosphereMixin {
 
       if (useDebrid && debridService != 'None') {
         final debrid = DebridApi();
+        final isTv = _movie.mediaType == 'tv';
         final files = debridService == 'Real-Debrid'
-            ? await debrid.resolveRealDebrid(magnetLink)
-            : await debrid.resolveTorBox(magnetLink);
+            ? await debrid.resolveRealDebrid(magnetLink,
+                season: isTv ? _selectedSeason : null,
+                episode: isTv ? _selectedEpisode : null)
+            : await debrid.resolveTorBox(magnetLink,
+                season: isTv ? _selectedSeason : null,
+                episode: isTv ? _selectedEpisode : null);
         if (_streamCancelled) return;
         if (files.isNotEmpty) {
-          if (_movie.mediaType == 'tv') {
-            final s = 'S${_selectedSeason.toString().padLeft(2, '0')}';
-            final e = 'E${_selectedEpisode.toString().padLeft(2, '0')}';
-            final match = files.where((f) => f.filename.toUpperCase().contains(s) && f.filename.toUpperCase().contains(e)).toList();
-            if (match.isNotEmpty) {
-              resolvedFileIndex = files.indexOf(match.first);
-              url = match.first.downloadUrl;
-            } else {
-              files.sort((a, b) => b.filesize.compareTo(a.filesize));
-              url = files.first.downloadUrl;
-            }
-          } else {
-            files.sort((a, b) => b.filesize.compareTo(a.filesize));
-            url = files.first.downloadUrl;
-          }
+          resolvedFileIndex = 0;
+          url = files.first.downloadUrl;
         }
       } else {
         url = await TorrentStreamService().streamTorrent(magnetLink,
