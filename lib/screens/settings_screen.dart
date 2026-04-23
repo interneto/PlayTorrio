@@ -56,6 +56,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _prowlarrApiKeyController = TextEditingController();
   bool _isTestingProwlarr = false;
   String? _prowlarrTestResult;
+  List<ProwlarrTag> _prowlarrAvailableTags = [];
+  Set<int> _prowlarrSelectedTagIds = {};
+  bool _prowlarrTagsLoaded = false;
   
   bool _isRDLoggedIn = false;
   final TextEditingController _rdController = TextEditingController();
@@ -153,6 +156,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Load Prowlarr settings
     final prowlarrUrl = await _settings.getProwlarrBaseUrl();
     final prowlarrKey = await _settings.getProwlarrApiKey();
+    final prowlarrTagIds = await _settings.getProwlarrTagIds();
 
     // Load torrent cache settings
     final cacheType = await _settings.getTorrentCacheType();
@@ -199,6 +203,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         
         _prowlarrUrlController.text = prowlarrUrl ?? '';
         _prowlarrApiKeyController.text = prowlarrKey ?? '';
+        _prowlarrSelectedTagIds = prowlarrTagIds.toSet();
         _torrentCacheType = cacheType;
         _torrentRamCacheMb = ramCacheMb;
         _isLightMode = lightMode;
@@ -206,6 +211,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _navbarVisible = navVisible;
         _navbarOrder = navOrder;
       });
+    }
+    if ((prowlarrUrl?.isNotEmpty ?? false) && (prowlarrKey?.isNotEmpty ?? false)) {
+      _tryLoadProwlarrTags();
     }
   }
 
@@ -568,7 +576,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const SizedBox(height: 40),
                     const Center(
                       child: Text(
-                        'PlayTorrio Native v1.1.8',
+                        'PlayTorrio Native v1.1.9',
                         style: TextStyle(color: Colors.white24, fontSize: 12, letterSpacing: 2, fontWeight: FontWeight.bold),
                       ),
                     ),
@@ -1291,7 +1299,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             ),
-            onChanged: (_) => setState(() => _prowlarrTestResult = null),
+            onChanged: (_) => setState(() {
+              _prowlarrTestResult = null;
+              _prowlarrTagsLoaded = false;
+              _prowlarrAvailableTags = [];
+            }),
           ),
           const SizedBox(height: 16),
           const Text('API Key', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
@@ -1306,8 +1318,73 @@ class _SettingsScreenState extends State<SettingsScreen> {
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             ),
-            onChanged: (_) => setState(() => _prowlarrTestResult = null),
+            onChanged: (_) => setState(() {
+              _prowlarrTestResult = null;
+              _prowlarrTagsLoaded = false;
+              _prowlarrAvailableTags = [];
+            }),
           ),
+          const SizedBox(height: 20),
+          const Text('Filter by Tag', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          if (!_prowlarrTagsLoaded) ...[
+            Text(
+              'Use the Test Connection button to load available tags.',
+              style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.4)),
+            ),
+          ] else if (_prowlarrAvailableTags.isEmpty) ...[
+            Text(
+              'No tags found in Prowlarr. Add tags to your indexers to use this filter.',
+              style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.4)),
+            ),
+          ] else ...[
+            Text(
+              'Limit searches to indexers with the selected tags. Leave all unselected to search all indexers.',
+              style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.6)),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _prowlarrAvailableTags.map((tag) {
+                final isSelected = _prowlarrSelectedTagIds.contains(tag.id);
+                return FilterChip(
+                  label: Text(tag.label),
+                  selected: isSelected,
+                  onSelected: (value) {
+                    setState(() {
+                      if (value) {
+                        _prowlarrSelectedTagIds.add(tag.id);
+                      } else {
+                        _prowlarrSelectedTagIds.remove(tag.id);
+                      }
+                    });
+                  },
+                  selectedColor: AppTheme.primaryColor.withValues(alpha: 0.25),
+                  checkmarkColor: AppTheme.primaryColor,
+                  backgroundColor: Colors.white.withValues(alpha: 0.05),
+                  labelStyle: TextStyle(
+                    color: isSelected ? AppTheme.primaryColor : Colors.white70,
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  ),
+                  side: BorderSide(
+                    color: isSelected
+                        ? AppTheme.primaryColor
+                        : Colors.white.withValues(alpha: 0.2),
+                  ),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                );
+              }).toList(),
+            ),
+            if (_prowlarrSelectedTagIds.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  'All indexers will be searched.',
+                  style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.4)),
+                ),
+              ),
+          ],
           const SizedBox(height: 16),
           Row(
             children: [
@@ -1431,6 +1508,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     try {
       final result = await _prowlarr.testConnection(url, apiKey);
+      if (result.success) {
+        _tryLoadProwlarrTags();
+      }
       if (mounted) {
         setState(() {
           _prowlarrTestResult = result.message;
@@ -1453,11 +1533,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     await _settings.setProwlarrBaseUrl(url);
     await _settings.setProwlarrApiKey(apiKey);
+    await _settings.setProwlarrTagIds(_prowlarrSelectedTagIds.toList());
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Prowlarr settings saved!')),
       );
+    }
+  }
+
+  /// Silently fetch Prowlarr tags; used on init and after a successful test.
+  Future<void> _tryLoadProwlarrTags() async {
+    final url = _prowlarrUrlController.text.trim();
+    final apiKey = _prowlarrApiKeyController.text.trim();
+    if (url.isEmpty || apiKey.isEmpty) return;
+    try {
+      final tags = await _prowlarr.fetchTags(url, apiKey);
+      if (mounted) {
+        setState(() {
+          _prowlarrAvailableTags = tags;
+          _prowlarrTagsLoaded = true;
+        });
+      }
+    } catch (_) {
+      // Non-fatal — tags section simply not shown until explicit test
     }
   }
 

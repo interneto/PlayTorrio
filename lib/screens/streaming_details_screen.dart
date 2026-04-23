@@ -59,6 +59,7 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
   final ScrollController _similarScrollController = ScrollController();
   final ScrollController _screenshotsScrollController = ScrollController();
   final ScrollController _episodeScrollController = ScrollController();
+  final ScrollController _seasonScrollController = ScrollController();
 
   final Map<String, dynamic> _providers = StreamProviders.providers;
 
@@ -133,6 +134,7 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
     _similarScrollController.dispose();
     _screenshotsScrollController.dispose();
     _episodeScrollController.dispose();
+    _seasonScrollController.dispose();
     super.dispose();
   }
 
@@ -707,24 +709,53 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
   }
 
   Widget _buildSeasonsAndEpisodes() {
+    void scrollSeasonsBy(double delta) {
+      if (!_seasonScrollController.hasClients) return;
+      final target = (_seasonScrollController.offset + delta)
+          .clamp(0.0, _seasonScrollController.position.maxScrollExtent);
+      _seasonScrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeInOut,
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Text(
-            'Episodes',
-            style: GoogleFonts.montserrat(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Episodes',
+                style: GoogleFonts.montserrat(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back_ios_rounded, size: 18, color: Colors.white70),
+                    onPressed: () => scrollSeasonsBy(-200),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.arrow_forward_ios_rounded, size: 18, color: Colors.white70),
+                    onPressed: () => scrollSeasonsBy(200),
+                  ),
+                ],
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 16),
         SizedBox(
           height: 50,
           child: ListView.builder(
+            controller: _seasonScrollController,
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 24),
             itemCount: _movie.numberOfSeasons,

@@ -465,8 +465,29 @@ class IptvAliveChecker {
 // Catalog Xtream-Codes scraper
 // ─────────────────────────────────────────────────────────────────────────────
 class IptvScraper {
-  static const _catalogBase =
-      'https://www.reddit.com/r/IPTV_ZONENEW/new/.json?limit=100&sort=new';
+  // Reddit's `.json` endpoint returns an HTML interstitial for browser-like
+  // User-Agents (anti-scraping). We therefore query the old.reddit.com host
+  // with a non-browser UA, and transparently fall back to other hosts.
+  // Reddit now 403s almost every unauthenticated UA. Strategy (in order):
+  //   1. Try hitting reddit hosts directly with a Googlebot UA — many Reddit
+  //      anti-bot rules still whitelist search-engine crawlers.
+  //   2. Fall back to public fetch/CORS proxies that perform the request
+  //      server-side (allorigins, corsproxy.io, r.jina.ai reader).
+  //   3. Last resort: scrape the .rss feed and extract links from <description>
+  //      CDATA sections (HTML, not JSON).
+  static const _catalogSub = 'IPTV_ZONENEW';
+  // One quick direct attempt — Reddit currently 403s almost everything, but
+  // this is cheap so we try once before going through a proxy.
+  static const _catalogDirectHost = 'https://www.reddit.com';
+  static const _catalogDirectUa =
+      'Googlebot/2.1 (+http://www.google.com/bot.html)';
+  // Public fetch proxies ordered by observed reliability (corsproxy.io has
+  // worked in practice; others are fallbacks). `{URL}` = URL-encoded target.
+  static const _fetchProxies = <String>[
+    'https://corsproxy.io/?{URL}',
+    'https://api.codetabs.com/v1/proxy?quest={URL}',
+    'https://api.allorigins.win/raw?url={URL}',
+  ];
   static const _ua = 'Mozilla/5.0 (Linux; Android 11; PlayTorrio) '
       'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36';
 
@@ -496,11 +517,7 @@ class IptvScraper {
   static Future<ScrapePage> scrapeCatalogPage(
       {int maxResults = 50, String? after}) async {
     final out = <String, IptvPortal>{};
-    final url = (after == null || after.isEmpty)
-        ? _catalogBase
-        : '$_catalogBase&after=$after';
-    debugPrint('[Catalog] GET ${_redact(url)}');
-    final catalogJson = await _httpGetText(url);
+    final catalogJson = await _fetchCatalogJson(after: after);
     if (catalogJson == null) {
       debugPrint('[Catalog] fetch failed');
       return const ScrapePage(portals: [], nextAfter: null);
@@ -735,5 +752,58 @@ class IptvScraper {
       debugPrint('[Catalog] httpGet failed: $e');
       return null;
     }
+  }
+
+  /// Fetches the subreddit listing as JSON. Reddit 403s most unauthenticated
+  /// clients, so we do one quick direct attempt and then go through public
+  /// fetch proxies (server-side fetch, bypasses Reddit's client-IP blocks).
+  /// Accepts only responses whose first non-whitespace byte is `{` or `[`.
+  static Future<String?> _fetchCatalogJson({String? after}) async {
+    String buildTarget(String host) {
+      final base = '$host/r/$_catalogSub/new/.json?limit=100&sort=new';
+      return (after == null || after.isEmpty) ? base : '$base&after=$after';
+    }
+
+    bool looksJson(String body) {
+      final t = body.trimLeft();
+      return t.startsWith('{') || t.startsWith('[');
+    }
+
+    final target = buildTarget(_catalogDirectHost);
+
+    // 1. One direct attempt with Googlebot UA.
+    debugPrint('[Catalog] GET ${_redact(target)} (direct)');
+    try {
+      final resp = await http.get(Uri.parse(target), headers: {
+        'User-Agent': _catalogDirectUa,
+        'Accept': 'application/json',
+      }).timeout(const Duration(seconds: 8));
+      if (resp.statusCode == 200 && looksJson(resp.body)) return resp.body;
+      debugPrint('[Catalog]   direct ${resp.statusCode} len=${resp.body.length}');
+    } catch (e) {
+      debugPrint('[Catalog]   direct failed: $e');
+    }
+
+    // 2. Proxy attempts.
+    final encoded = Uri.encodeComponent(target);
+    for (final tmpl in _fetchProxies) {
+      final proxyUrl = tmpl.replaceFirst('{URL}', encoded);
+      debugPrint('[Catalog] proxy ${_redact(proxyUrl)}');
+      try {
+        final resp = await http.get(Uri.parse(proxyUrl), headers: {
+          'User-Agent': _ua,
+          'Accept': 'application/json, text/plain, */*',
+        }).timeout(const Duration(seconds: 20));
+        if (resp.statusCode != 200) {
+          debugPrint('[Catalog]   proxy ${resp.statusCode}');
+          continue;
+        }
+        if (looksJson(resp.body)) return resp.body;
+        debugPrint('[Catalog]   proxy non-JSON (len=${resp.body.length})');
+      } catch (e) {
+        debugPrint('[Catalog]   proxy failed: $e');
+      }
+    }
+    return null;
   }
 }
