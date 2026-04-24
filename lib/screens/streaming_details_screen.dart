@@ -7,6 +7,8 @@ import '../api/stream_extractor.dart';
 import '../api/stremio_service.dart';
 import '../api/stream_providers.dart';
 import '../api/webstreamr_service.dart';
+import '../api/site111477_service.dart';
+import '../api/site111477_proxy.dart' as site111477_proxy;
 import '../widgets/loading_overlay.dart';
 import '../services/episode_watched_service.dart';
 import '../widgets/movie_atmosphere.dart';
@@ -216,8 +218,58 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
 
     bool found = false;
 
-    // Primary: try the local WebStreamr port first.
-    if (!_extractionCancelled && _movie.imdbId != null && _movie.imdbId!.isNotEmpty) {
+    // Top priority: try the 111477.xyz direct-file index.
+    if (!_extractionCancelled) {
+      if (mounted) setState(() => _statusMessage = 'Searching 111477.xyz…');
+      try {
+        final svc = Site111477Service();
+        List<Site111477Match> hits;
+        if (_movie.mediaType == 'tv') {
+          hits = await svc.findEpisodeSources(
+            showTitle: _movie.title,
+            season: _selectedSeason,
+            episode: _selectedEpisode,
+          );
+        } else {
+          final year = _movie.releaseDate.length >= 4
+              ? _movie.releaseDate.substring(0, 4)
+              : null;
+          hits = await svc.findMovieSources(title: _movie.title, year: year);
+        }
+        if (!_extractionCancelled && hits.isNotEmpty) {
+          final hit = hits.first;
+          if (mounted) setState(() => _statusMessage = 'Starting 111477 proxy…');
+          final proxiedUrl = await site111477_proxy.start111477Proxy(hit.fileUrl);
+          if (!_extractionCancelled && mounted) {
+            found = true;
+            if (Navigator.canPop(context)) Navigator.pop(context);
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => PlayerScreen(
+                  streamUrl: proxiedUrl,
+                  title: _movie.mediaType == 'tv'
+                      ? '${_movie.title} - S$_selectedSeason E$_selectedEpisode'
+                      : _movie.title,
+                  movie: _movie,
+                  providers: _providers,
+                  activeProvider: 'service111477',
+                  selectedSeason: _movie.mediaType == 'tv' ? _selectedSeason : null,
+                  selectedEpisode: _movie.mediaType == 'tv' ? _selectedEpisode : null,
+                  startPosition: widget.startPosition,
+                  sources: Site111477Service.toStreamSources(hits),
+                ),
+              ),
+            );
+          }
+        }
+      } catch (e) {
+        debugPrint('Error extracting from 111477: $e');
+      }
+    }
+
+    // Secondary: try the local WebStreamr port.
+    if (!found && !_extractionCancelled && _movie.imdbId != null && _movie.imdbId!.isNotEmpty) {
       if (mounted) setState(() => _statusMessage = 'Searching WebStreamr…');
       try {
         final webStreamr = WebStreamrService();
@@ -268,7 +320,11 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
         if (!mounted || _extractionCancelled) break;
 
         final provider = _providers[key];
-        
+
+        // Skip service-style providers (no embed URL builder) — they're
+        // handled by their own dedicated paths above.
+        if (provider['movie'] == null || provider['tv'] == null) continue;
+
         final String url;
         if (_movie.mediaType == 'tv') {
           url = provider['tv'](

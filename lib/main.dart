@@ -17,6 +17,7 @@ import 'api/tmdb_api.dart';
 import 'api/local_server_service.dart';
 import 'api/music_player_service.dart';
 import 'api/webstreamr_service.dart';
+import 'api/site111477_proxy.dart' as site111477_proxy;
 import 'models/movie.dart';
 import 'services/player_pool_service.dart';
 import 'utils/webview_cleanup.dart';
@@ -176,13 +177,29 @@ class _PlayTorrioAppState extends State<PlayTorrioApp> with WidgetsBindingObserv
       await TorrentStreamService().cleanup();
     } catch (_) {}
     try {
+      // Stop any running 111477 proxy. Cache deletion happens AFTER
+      // PlayerPoolService.dispose() above so that media_kit / MPV has
+      // released its file handle on the proxy connection — otherwise
+      // Windows pending-delete keeps the cache files around.
+      if (site111477_proxy.is111477ProxyRunning) {
+        await site111477_proxy.stop111477Proxy();
+      }
+    } catch (_) {}
+    try {
       // Fire-and-forget — WebView2 cache wipe must not block close.
       unawaited(WebViewCleanup.cleanupWebView2Cache());
     } catch (_) {}
 
     // Small grace period so background threads can unwind before the process
     // image gets torn down.
-    await Future.delayed(const Duration(milliseconds: 150));
+    await Future.delayed(const Duration(milliseconds: 250));
+
+    // Final cache wipe AFTER the grace period — by now any lingering MPV
+    // file handle on the proxy stream is gone, so Windows will let us
+    // actually delete the on-disk cache files.
+    try {
+      await site111477_proxy.purge111477Cache();
+    } catch (_) {}
 
     try {
       await windowManager.setPreventClose(false);
@@ -199,6 +216,7 @@ class _PlayTorrioAppState extends State<PlayTorrioApp> with WidgetsBindingObserv
       PlayerPoolService().dispose();
       TorrentStreamService().cleanup();
       WebViewCleanup.cleanupWebView2Cache();
+      site111477_proxy.purge111477Cache();
     }
   }
 

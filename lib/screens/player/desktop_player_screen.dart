@@ -25,6 +25,8 @@ import '../../services/watch_history_service.dart';
 import '../../api/trakt_service.dart';
 import '../../api/simkl_service.dart';
 import '../../api/webstreamr_service.dart';
+import '../../api/site111477_service.dart';
+import '../../api/site111477_proxy.dart' as site111477_proxy;
 import '../../api/arabic_service.dart';
 import '../../api/stremio_service.dart';
 import '../../api/stream_providers.dart';
@@ -470,6 +472,9 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
   String? _currentProvider;
   List<StreamSource>? _currentSources;
   String? _currentUrl;
+  /// For provider == 'service111477', the upstream fileUrl currently playing
+  /// (the menu compares against this rather than the localhost proxy URL).
+  String? _current111477FileUrl;
   int _currentFallbackSourceIndex = 0;
   bool _isSwitchingProvider = false;
   bool _isInitPlaybackRunning = false;
@@ -507,6 +512,11 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
     _currentProvider = widget.activeProvider;
     _currentSources = widget.sources;
     _currentUrl = widget.mediaPath;
+    if (_currentProvider == 'service111477' &&
+        widget.sources != null &&
+        widget.sources!.isNotEmpty) {
+      _current111477FileUrl = widget.sources!.first.url;
+    }
     
     windowManager.addListener(this);
     WidgetsBinding.instance.addObserver(this);
@@ -606,6 +616,11 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
     // fall back to mediaPath which may be a stream URL).
     final torrentId = widget.magnetLink ?? widget.mediaPath;
     TorrentStreamService().removeTorrent(torrentId);
+
+    // Tear down the 111477 proxy and delete its on-disk cache.
+    if (site111477_proxy.is111477ProxyRunning) {
+      site111477_proxy.stop111477Proxy();
+    }
 
     super.dispose();
   }
@@ -781,10 +796,28 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
         try {
           _subscribeToStreams();
           await _configureMpvProperties();
-          await _player.open(Media(source.url, httpHeaders: source.headers ?? widget.headers));
+
+          // For 111477 sources, source.url is the upstream file URL — we
+          // must route it through the local proxy. Reuse the running proxy
+          // if it's already serving this exact file, otherwise restart.
+          var openUrl = source.url;
+          if (_currentProvider == 'service111477') {
+            if (!site111477_proxy.is111477ProxyRunning ||
+                _current111477FileUrl != source.url) {
+              if (site111477_proxy.is111477ProxyRunning) {
+                await site111477_proxy.stop111477Proxy();
+              }
+              openUrl = await site111477_proxy.start111477Proxy(source.url);
+              _current111477FileUrl = source.url;
+            } else {
+              openUrl = site111477_proxy.site111477ProxyUrl!;
+            }
+          }
+
+          await _player.open(Media(openUrl, httpHeaders: source.headers ?? widget.headers));
           _player.setVolume(_volumeNotifier.value);
           setState(() {
-            _currentUrl = source.url;
+            _currentUrl = openUrl;
           });
           return; // Opened successfully
         } catch (e) {
@@ -860,7 +893,30 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
       Map<String, String>? headers;
       List<StreamSource>? sources;
 
-      if (newProvider == 'webstreamr' && widget.movie?.imdbId != null) {
+      if (newProvider == 'service111477' && widget.movie != null) {
+        final svc = Site111477Service();
+        List<Site111477Match> hits;
+        if (widget.movie!.mediaType == 'tv') {
+          hits = await svc.findEpisodeSources(
+            showTitle: widget.movie!.title,
+            season: widget.selectedSeason ?? 1,
+            episode: widget.selectedEpisode ?? 1,
+          );
+        } else {
+          final year = widget.movie!.releaseDate.length >= 4
+              ? widget.movie!.releaseDate.substring(0, 4)
+              : null;
+          hits = await svc.findMovieSources(title: widget.movie!.title, year: year);
+        }
+        if (hits.isNotEmpty) {
+          if (site111477_proxy.is111477ProxyRunning) {
+            await site111477_proxy.stop111477Proxy();
+          }
+          streamUrl = await site111477_proxy.start111477Proxy(hits.first.fileUrl);
+          sources = Site111477Service.toStreamSources(hits);
+          _current111477FileUrl = hits.first.fileUrl;
+        }
+      } else if (newProvider == 'webstreamr' && widget.movie?.imdbId != null) {
         final webStreamr = WebStreamrService();
         final webStreamrSources = await webStreamr.getStreams(
           imdbId: widget.movie!.imdbId!,
@@ -872,7 +928,7 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
           streamUrl = webStreamrSources.first.url;
           sources = webStreamrSources;
         }
-      } else {
+      } else if (provider['movie'] != null && provider['tv'] != null) {
         final String providerUrl;
         if (widget.movie!.mediaType == 'tv') {
           providerUrl = provider['tv'](
@@ -1716,7 +1772,9 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
               itemCount: _currentSources!.length,
               itemBuilder: (context, index) {
                 final source = _currentSources![index];
-                final isCurrent = source.url == _currentUrl;
+                final isCurrent = _currentProvider == 'service111477'
+                    ? source.url == _current111477FileUrl
+                    : source.url == _currentUrl;
                 return ListTile(
                   leading: Icon(
                     Icons.play_circle_outline,
@@ -1747,6 +1805,50 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
                       // Save current position
                       final currentPos = _positionNotifier.value;
                       final messenger = ScaffoldMessenger.of(context);
+
+                      // 111477: stop the proxy (which deletes its on-disk
+                      // cache), restart it with the new upstream URL, then
+                      // open the new localhost stream URL.
+                      if (_currentProvider == 'service111477') {
+                        messenger.showSnackBar(SnackBar(
+                          content: Text('Switching to ${source.title}…'),
+                          duration: const Duration(seconds: 30),
+                        ));
+                        try {
+                          if (site111477_proxy.is111477ProxyRunning) {
+                            await site111477_proxy.stop111477Proxy();
+                          }
+                          final newProxied =
+                              await site111477_proxy.start111477Proxy(source.url);
+                          if (!mounted) return;
+                          messenger.hideCurrentSnackBar();
+                          await _player.open(Media(newProxied));
+                          setState(() {
+                            _currentUrl = newProxied;
+                            _current111477FileUrl = source.url;
+                            _currentFallbackSourceIndex = 0;
+                            _hasError = false;
+                            _errorMessage = '';
+                          });
+                          if (currentPos.inSeconds > 0) {
+                            await _player.seek(currentPos);
+                          }
+                          if (mounted) {
+                            messenger.showSnackBar(SnackBar(
+                              content: Text('Switched to ${source.title}'),
+                              duration: const Duration(seconds: 2),
+                            ));
+                          }
+                        } catch (e) {
+                          if (!mounted) return;
+                          messenger.hideCurrentSnackBar();
+                          messenger.showSnackBar(SnackBar(
+                            content: Text('Switch failed: $e'),
+                            duration: const Duration(seconds: 3),
+                          ));
+                        }
+                        return;
+                      }
 
                       // Arabic provider: extract on-demand from embed URL
                       if (_currentProvider == 'arabic' && source.type == 'arabic_embed') {
@@ -1964,6 +2066,7 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
       String? magnetLink;
       int? fileIndex;
       Map<String, String>? headers;
+      List<StreamSource>? nextSources;
       String? activeProvider = widget.activeProvider;
 
       final isTorrent = widget.magnetLink != null &&
@@ -1971,6 +2074,7 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
       final isStremioDirect = widget.activeProvider == 'stremio_direct';
       final isWebStreamr = widget.activeProvider == 'webstreamr';
       final isAmri = widget.activeProvider == 'amri';
+      final isService111477 = widget.activeProvider == 'service111477';
 
       if (isStremioDirect && widget.stremioAddonBaseUrl != null) {
         // ── Stremio addon: re-fetch streams for next episode ────────────
@@ -2101,6 +2205,25 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
         );
         if (sources.isEmpty) throw Exception('No WebStreamr sources for S${nextSeason}E$nextEpisode');
         streamUrl = sources.first.url;
+      } else if (isService111477) {
+        // ── 111477.xyz: resolve next episode → restart proxy ──────────
+        final svc = Site111477Service();
+        final hits = await svc.findEpisodeSources(
+          showTitle: widget.movie!.title,
+          season: nextSeason,
+          episode: nextEpisode,
+        );
+        if (hits.isEmpty) {
+          throw Exception('No 111477 file for S${nextSeason}E$nextEpisode');
+        }
+        // Stop the previous proxy session before starting the new one;
+        // start111477Proxy() also handles this internally but we want the
+        // old cache deleted first.
+        if (site111477_proxy.is111477ProxyRunning) {
+          await site111477_proxy.stop111477Proxy();
+        }
+        streamUrl = await site111477_proxy.start111477Proxy(hits.first.fileUrl);
+        nextSources = Site111477Service.toStreamSources(hits);
       } else if (isAmri) {
         // ── AMRI: re-extract for next episode ─────────────────────────
         final extractor = StreamExtractor();
@@ -2156,6 +2279,7 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
             stremioId: widget.stremioId,
             stremioAddonBaseUrl: widget.stremioAddonBaseUrl,
             providers: widget.providers,
+            sources: nextSources,
           ),
         ),
       );
@@ -2255,7 +2379,30 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
       Map<String, String>? headers;
       List<StreamSource>? sources;
 
-      if (newProvider == 'webstreamr' && widget.movie?.imdbId != null) {
+      if (newProvider == 'service111477' && widget.movie != null) {
+        final svc = Site111477Service();
+        List<Site111477Match> hits;
+        if (widget.movie!.mediaType == 'tv') {
+          hits = await svc.findEpisodeSources(
+            showTitle: widget.movie!.title,
+            season: widget.selectedSeason ?? 1,
+            episode: widget.selectedEpisode ?? 1,
+          );
+        } else {
+          final year = widget.movie!.releaseDate.length >= 4
+              ? widget.movie!.releaseDate.substring(0, 4)
+              : null;
+          hits = await svc.findMovieSources(title: widget.movie!.title, year: year);
+        }
+        if (hits.isNotEmpty) {
+          if (site111477_proxy.is111477ProxyRunning) {
+            await site111477_proxy.stop111477Proxy();
+          }
+          streamUrl = await site111477_proxy.start111477Proxy(hits.first.fileUrl);
+          sources = Site111477Service.toStreamSources(hits);
+          _current111477FileUrl = hits.first.fileUrl;
+        }
+      } else if (newProvider == 'webstreamr' && widget.movie?.imdbId != null) {
         final webStreamr = WebStreamrService();
         final webStreamrSources = await webStreamr.getStreams(
           imdbId: widget.movie!.imdbId!,
@@ -2267,7 +2414,7 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
           streamUrl = webStreamrSources.first.url;
           sources = webStreamrSources;
         }
-      } else {
+      } else if (provider['movie'] != null && provider['tv'] != null) {
         final String providerUrl;
         if (widget.movie!.mediaType == 'tv') {
           providerUrl = provider['tv'](
