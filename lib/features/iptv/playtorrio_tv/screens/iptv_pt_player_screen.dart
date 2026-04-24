@@ -307,9 +307,8 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
 
   Future<void> _openCurrent() async {
     final src = widget.sources[_sourceIdx];
-    setState(() {
-      _statusBanner = 'Connecting to ${src.label}…';
-    });
+    // Connect silently — no banner. The buffering indicator (if any) will
+    // appear naturally while the stream loads.
     try {
       await _player.open(
         Media(src.url, httpHeaders: const {'User-Agent': _ua}),
@@ -442,10 +441,7 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
       _retryAttempt++;
       final delayIdx = (_retryAttempt - 1).clamp(0, _backoffMs.length - 1);
       final delay = _backoffMs[delayIdx];
-      if (mounted) {
-        setState(() => _statusBanner =
-            'Reconnecting (attempt $_retryAttempt)…');
-      }
+      // Reconnect silently in the background — no UI banner.
 
       await Future.delayed(Duration(milliseconds: delay));
 
