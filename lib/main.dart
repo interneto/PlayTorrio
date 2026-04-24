@@ -16,6 +16,7 @@ import 'api/torrent_stream_service.dart';
 import 'api/tmdb_api.dart';
 import 'api/local_server_service.dart';
 import 'api/music_player_service.dart';
+import 'api/webstreamr_service.dart';
 import 'models/movie.dart';
 import 'services/player_pool_service.dart';
 import 'utils/webview_cleanup.dart';
@@ -119,6 +120,11 @@ void main() async {
   await AppTheme.initTheme();
   
   PlayerPoolService().warmUp();
+  // Pre-initialise the local WebStreamr pipeline so the first call is fast.
+  // Errors here are non-fatal — the service init() is also called lazily.
+  unawaited(WebStreamrService.init().catchError((e) {
+    debugPrint('[Boot] WebStreamrService.init failed (non-fatal): $e');
+  }));
   debugPrint('[Boot] All init complete — launching app');
 
   runApp(const PlayTorrioApp());

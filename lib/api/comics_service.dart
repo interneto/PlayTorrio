@@ -5,6 +5,7 @@ import 'package:html/parser.dart' as hp;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'local_server_service.dart';
 import 'comic_page_extractor.dart';
+import 'readcomicsonline_scraper.dart';
 
 class Comic {
   final String title;
@@ -13,6 +14,9 @@ class Comic {
   final String status;
   final String publication;
   final String summary;
+  /// Source tag identifying which scraper produced this comic.
+  /// '' or 'rco' = readcomiconline.li (default), 'rcoru' = readcomicsonline.ru.
+  final String source;
 
   Comic({
     required this.title,
@@ -21,6 +25,7 @@ class Comic {
     required this.status,
     required this.publication,
     required this.summary,
+    this.source = '',
   });
 
   factory Comic.fromJson(Map<String, dynamic> json) {
@@ -31,6 +36,7 @@ class Comic {
       status: json['status'] ?? '',
       publication: json['publication'] ?? '',
       summary: json['summary'] ?? '',
+      source: json['source'] ?? '',
     );
   }
 
@@ -42,6 +48,7 @@ class Comic {
       'status': status,
       'publication': publication,
       'summary': summary,
+      'source': source,
     };
   }
 }
@@ -97,6 +104,26 @@ class ComicsService {
   }
 
   Future<List<Comic>> searchComics(String query) async {
+    // Run both sources in parallel and merge, deduping by normalized title.
+    final results = await Future.wait<List<Comic>>([
+      _searchRco(query),
+      ReadComicsOnlineScraper.searchComics(query),
+    ]);
+
+    final seen = <String>{};
+    final merged = <Comic>[];
+    for (final list in results) {
+      for (final c in list) {
+        final key = c.title.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+        if (key.isEmpty || seen.contains(key)) continue;
+        seen.add(key);
+        merged.add(c);
+      }
+    }
+    return merged;
+  }
+
+  Future<List<Comic>> _searchRco(String query) async {
     try {
       final url = '$_baseUrl/Search/Comic';
       final response = await http.post(
@@ -118,6 +145,11 @@ class ComicsService {
   }
 
   Future<ComicDetails?> getComicDetails(Comic comic) async {
+    // Dispatch by source / host.
+    if (comic.source == ReadComicsOnlineScraper.sourceTag ||
+        ReadComicsOnlineScraper.ownsUrl(comic.url)) {
+      return ReadComicsOnlineScraper.getComicDetails(comic);
+    }
     try {
       var url = comic.url.startsWith('http') ? comic.url : '$_baseUrl${comic.url}';
       // Ensure we don't have duplicate s2
@@ -198,6 +230,10 @@ class ComicsService {
   }
 
   Future<List<String>> getChapterPages(String chapterUrl, ComicPageExtractor extractor) async {
+    // Dispatch by host.
+    if (ReadComicsOnlineScraper.ownsUrl(chapterUrl)) {
+      return ReadComicsOnlineScraper.getChapterPages(chapterUrl);
+    }
     try {
       // MANDATORY: Add &s=s2 to the URL
       var url = chapterUrl.startsWith('http') ? chapterUrl : '$_baseUrl$chapterUrl';

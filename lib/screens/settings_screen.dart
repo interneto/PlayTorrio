@@ -19,6 +19,7 @@ import '../services/app_updater_service.dart';
 import '../widgets/update_dialog.dart';
 import '../utils/app_theme.dart';
 import 'lists_screen.dart';
+import 'webstreamr_settings_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -485,6 +486,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         const SizedBox(height: 8),
                         _buildProwlarrConfig(),
+                        const SizedBox(height: 20),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          child: Text('WEBSTREAMR (LOCAL)', style: TextStyle(color: AppTheme.current.primaryColor, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+                        ),
+                        const SizedBox(height: 8),
+                        Card(
+                          child: ListTile(
+                            leading: const Icon(Icons.language),
+                            title: const Text('WebStreamr Settings'),
+                            subtitle: const Text('Country toggles, MFP, FlareSolverr, TMDB token'),
+                            trailing: const Icon(Icons.chevron_right),
+                            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                              builder: (_) => const WebStreamrSettingsScreen(),
+                            )),
+                          ),
+                        ),
                       ],
                     ),
 
@@ -576,7 +594,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const SizedBox(height: 40),
                     const Center(
                       child: Text(
-                        'PlayTorrio Native v1.1.9',
+                        'PlayTorrio Native v1.2.0',
                         style: TextStyle(color: Colors.white24, fontSize: 12, letterSpacing: 2, fontWeight: FontWeight.bold),
                       ),
                     ),

@@ -417,6 +417,8 @@ class _AudiobookDownloadsScreenState extends State<AudiobookDownloadsScreen> {
         return 'GoldenAudiobook';
       case 'appaudiobooks':
         return 'AppAudiobooks';
+      case 'ezaudiobookforsoul':
+        return 'EzAudiobookForSoul';
       default:
         return source ?? 'Unknown';
     }

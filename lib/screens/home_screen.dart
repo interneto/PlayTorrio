@@ -1707,7 +1707,46 @@ class _ContinueWatchingSectionState extends State<_ContinueWatchingSection> {
       final title = item['title'] as String;
       final posterPath = item['posterPath'] as String; 
       final startPos = Duration(milliseconds: item['position'] as int);
-      
+
+      // Streaming-mode entries (stream/amri/stremio_direct) don't keep a
+      // re-playable URL — extraction tokens expire. The cleanest UX is to
+      // re-open the StreamingDetailsScreen which auto-runs the extraction
+      // splash and then forwards startPosition to the player so it seeks
+      // once the duration loads.
+      final isStreamingEntry = method == 'stream' ||
+          method == 'amri' ||
+          method == 'stremio_direct';
+      if (isStreamingEntry) {
+        if (mounted) {
+          final mediaType =
+              item['mediaType'] as String? ?? (season != null ? 'tv' : 'movie');
+          final movie = Movie(
+            id: tmdbId,
+            title: title,
+            posterPath: posterPath,
+            backdropPath: '',
+            overview: '',
+            releaseDate: '',
+            voteAverage: 0,
+            mediaType: mediaType,
+            genres: [],
+            imdbId: item['imdbId'],
+          );
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => StreamingDetailsScreen(
+                movie: movie,
+                initialSeason: season,
+                initialEpisode: episode,
+                startPosition: startPos,
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
       // Get saved magnet link and file index for torrents
       final savedMagnetLink = item['magnetLink'] as String?;
       final savedFileIndex = item['fileIndex'] as int?;

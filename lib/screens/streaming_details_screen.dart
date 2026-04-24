@@ -6,7 +6,7 @@ import '../api/tmdb_api.dart';
 import '../api/stream_extractor.dart';
 import '../api/stremio_service.dart';
 import '../api/stream_providers.dart';
-import '../api/nexvid_service.dart';
+import '../api/webstreamr_service.dart';
 import '../widgets/loading_overlay.dart';
 import '../services/episode_watched_service.dart';
 import '../widgets/movie_atmosphere.dart';
@@ -216,51 +216,51 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
 
     bool found = false;
 
-    // ── 1) NexVid scraped sources (Alpha/Beta/Gamma/Delta) ───────────────
-    // Fast path: single HTTP call per source, no WebView needed.
-    if (!found && !_extractionCancelled && mounted) {
-      setState(() => _statusMessage = 'Searching NexVid sources...');
+    // Primary: try the local WebStreamr port first.
+    if (!_extractionCancelled && _movie.imdbId != null && _movie.imdbId!.isNotEmpty) {
+      if (mounted) setState(() => _statusMessage = 'Searching WebStreamr…');
       try {
-        final nexvid = NexVidService();
-        final year = _movie.releaseDate.isNotEmpty
-            ? _movie.releaseDate.split('-').first
-            : '';
-        final result = await nexvid.extract(
-          tmdbId: _movie.id.toString(),
-          title: _movie.title,
-          year: year,
-          isMovie: _movie.mediaType != 'tv',
-          season: _movie.mediaType == 'tv' ? _selectedSeason : null,
-          episode: _movie.mediaType == 'tv' ? _selectedEpisode : null,
+        final webStreamr = WebStreamrService();
+        final isMovie = _movie.mediaType != 'tv';
+        final wsSources = await webStreamr.getStreams(
+          imdbId: _movie.imdbId!,
+          isMovie: isMovie,
+          season: isMovie ? null : _selectedSeason,
+          episode: isMovie ? null : _selectedEpisode,
+          tmdbId: _movie.id,
         );
-        if (!_extractionCancelled && result != null && mounted) {
+        if (!_extractionCancelled && wsSources.isNotEmpty) {
           found = true;
-          if (Navigator.canPop(context)) Navigator.pop(context);
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => PlayerScreen(
-                streamUrl: result.primaryUrl,
-                title: _movie.mediaType == 'tv'
-                    ? '${_movie.title} - S$_selectedSeason E$_selectedEpisode'
-                    : _movie.title,
-                headers: result.headers,
-                movie: _movie,
-                providers: _providers,
-                activeProvider: 'nexvid_${result.sourceId}',
-                selectedSeason: _movie.mediaType == 'tv' ? _selectedSeason : null,
-                selectedEpisode: _movie.mediaType == 'tv' ? _selectedEpisode : null,
-                startPosition: widget.startPosition,
-                sources: result.streamSources,
+          if (mounted && !_extractionCancelled) {
+            if (Navigator.canPop(context)) Navigator.pop(context);
+            final first = wsSources.first;
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => PlayerScreen(
+                  streamUrl: first.url,
+                  title: _movie.mediaType == 'tv'
+                      ? '${_movie.title} - S$_selectedSeason E$_selectedEpisode'
+                      : _movie.title,
+                  headers: first.headers,
+                  movie: _movie,
+                  providers: _providers,
+                  activeProvider: 'webstreamr',
+                  selectedSeason: _movie.mediaType == 'tv' ? _selectedSeason : null,
+                  selectedEpisode: _movie.mediaType == 'tv' ? _selectedEpisode : null,
+                  startPosition: widget.startPosition,
+                  sources: wsSources,
+                ),
               ),
-            ),
-          );
+            );
+          }
         }
       } catch (e) {
-        debugPrint('[StreamExtractor] NexVid error: $e');
+        debugPrint('Error extracting from WebStreamr: $e');
       }
     }
 
+    // Fallback: web embeds (VidLink/etc.) if WebStreamr returned nothing.
     if (!found) {
       final providerKeys = _providers.keys.toList();
 

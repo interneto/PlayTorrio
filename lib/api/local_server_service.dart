@@ -165,9 +165,18 @@ class LocalServerService {
     
     debugPrint('[ComicProxy] Fetching: $targetUrl');
 
+    // Pick the Referer per source so each origin's hotlink check passes.
+    String referer = 'https://readcomiconline.li/';
+    try {
+      final host = Uri.parse(targetUrl).host;
+      if (host.contains('readcomicsonline.ru')) {
+        referer = 'https://readcomicsonline.ru/';
+      }
+    } catch (_) {}
+
     final headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
-      'Referer': 'https://readcomiconline.li/',
+      'Referer': referer,
       'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept-Encoding': 'gzip, deflate, br',
@@ -389,6 +398,7 @@ class LocalServerService {
     final params = request.url.queryParameters;
     final targetUrl = params['url'];
     final headersJson = params['headers'];
+    final stripMode = params['strip']; // e.g. "png"
 
     if (targetUrl == null) {
       return Response(400, body: 'Missing url parameter');
@@ -447,7 +457,7 @@ class LocalServerService {
                   final fullUri = uri.startsWith('http') ? uri
                       : uri.startsWith('/') ? '$serverBase$uri'
                       : '$basePath$uri';
-                  return 'URI="${getHlsProxyUrl(fullUri, customHeaders)}"';
+                  return 'URI="${getHlsProxyUrl(fullUri, customHeaders, stripMode: stripMode)}"';
                 },
               );
             }
@@ -457,7 +467,7 @@ class LocalServerService {
           final fullUrl = trimmed.startsWith('http') ? trimmed
               : trimmed.startsWith('/') ? '$serverBase$trimmed'
               : '$basePath$trimmed';
-          return getHlsProxyUrl(fullUrl, customHeaders);
+          return getHlsProxyUrl(fullUrl, customHeaders, stripMode: stripMode);
         }).toList();
 
         return Response.ok(
@@ -480,6 +490,20 @@ class LocalServerService {
         if (v != null) responseHeaders[h] = v;
       }
 
+      // Optional segment transform: strip PNG wrapper used by some hosts
+      // (e.g. RG Shows / 1shows.app) which serve TS segments as fake PNG
+      // files on TikTok CDN. The real MPEG-TS data starts at the first
+      // 0x47 sync byte after the PNG IEND chunk.
+      if (stripMode == 'png') {
+        final raw = await _collectBytes(streamedResponse.stream);
+        final stripped = _stripPngWrapper(raw);
+        responseHeaders['content-type'] = 'video/mp2t';
+        responseHeaders['content-length'] = stripped.length.toString();
+        responseHeaders.remove('content-range');
+        return Response(streamedResponse.statusCode,
+            body: stripped, headers: responseHeaders);
+      }
+
       return Response(streamedResponse.statusCode, body: streamedResponse.stream, headers: responseHeaders);
     } catch (e) {
       debugPrint('[HlsProxy] Error: $e');
@@ -488,10 +512,58 @@ class LocalServerService {
   }
 
   /// Returns a local proxy URL for an HLS stream with custom headers.
-  String getHlsProxyUrl(String targetUrl, Map<String, String> headers) {
-    return '$baseUrl/hls-proxy'
+  String getHlsProxyUrl(String targetUrl, Map<String, String> headers,
+      {String? stripMode}) {
+    final base = '$baseUrl/hls-proxy'
         '?url=${Uri.encodeComponent(targetUrl)}'
         '&headers=${Uri.encodeComponent(json.encode(headers))}';
+    return stripMode == null ? base : '$base&strip=$stripMode';
+  }
+
+  /// Read the entire body of a streamed response into memory.
+  static Future<List<int>> _collectBytes(Stream<List<int>> stream) async {
+    final out = <int>[];
+    await for (final chunk in stream) {
+      out.addAll(chunk);
+    }
+    return out;
+  }
+
+  /// Strip a fake PNG wrapper that hides MPEG-TS segment data.
+  /// Returns the original bytes unchanged if no PNG signature is present.
+  static List<int> _stripPngWrapper(List<int> raw) {
+    if (raw.length < 16) return raw;
+    // PNG signature: 89 50 4E 47 0D 0A 1A 0A
+    if (raw[0] != 0x89 ||
+        raw[1] != 0x50 ||
+        raw[2] != 0x4E ||
+        raw[3] != 0x47) {
+      return raw;
+    }
+    // Find IEND chunk type (49 45 4E 44) — its CRC trails for 4 bytes.
+    var idx = -1;
+    for (var i = 8; i < raw.length - 8; i++) {
+      if (raw[i] == 0x49 &&
+          raw[i + 1] == 0x45 &&
+          raw[i + 2] == 0x4E &&
+          raw[i + 3] == 0x44) {
+        idx = i + 8; // skip "IEND" + 4-byte CRC
+        break;
+      }
+    }
+    if (idx < 0) return raw;
+    // Find the first MPEG-TS sync byte (0x47) at a packet boundary.
+    // Validate by checking the next byte 188 bytes later is also 0x47.
+    for (var p = idx; p < raw.length - 188; p++) {
+      if (raw[p] == 0x47 && raw[p + 188] == 0x47) {
+        return raw.sublist(p);
+      }
+    }
+    // Fallback: first 0x47 we find.
+    for (var p = idx; p < raw.length; p++) {
+      if (raw[p] == 0x47) return raw.sublist(p);
+    }
+    return raw;
   }
 
   Future<void> stop() async {
