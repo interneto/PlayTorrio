@@ -1397,13 +1397,12 @@ class _DetailsScreenState extends State<DetailsScreen> with AtmosphereMixin {
         if (useDebrid && debridService != 'None') {
           final debrid = DebridApi();
           final isTv = _movie.mediaType == 'tv';
-          final files = debridService == 'Real-Debrid'
-              ? await debrid.resolveRealDebrid(magnet,
-                  season: isTv ? _selectedSeason : null,
-                  episode: isTv ? _selectedEpisode : null)
-              : await debrid.resolveTorBox(magnet,
-                  season: isTv ? _selectedSeason : null,
-                  episode: isTv ? _selectedEpisode : null);
+          final files = await debrid.resolveByService(
+            debridService,
+            magnet,
+            season: isTv ? _selectedSeason : null,
+            episode: isTv ? _selectedEpisode : null,
+          );
           if (_streamCancelled) return;
           if (files.isNotEmpty) {
             // resolveX always returns a single, pre-picked file.
@@ -1551,13 +1550,12 @@ class _DetailsScreenState extends State<DetailsScreen> with AtmosphereMixin {
       if (useDebrid && debridService != 'None') {
         final debrid = DebridApi();
         final isTv = _movie.mediaType == 'tv';
-        final files = debridService == 'Real-Debrid'
-            ? await debrid.resolveRealDebrid(magnetLink,
-                season: isTv ? _selectedSeason : null,
-                episode: isTv ? _selectedEpisode : null)
-            : await debrid.resolveTorBox(magnetLink,
-                season: isTv ? _selectedSeason : null,
-                episode: isTv ? _selectedEpisode : null);
+        final files = await debrid.resolveByService(
+          debridService,
+          magnetLink,
+          season: isTv ? _selectedSeason : null,
+          episode: isTv ? _selectedEpisode : null,
+        );
         if (_streamCancelled) return;
         if (files.isNotEmpty) {
           resolvedFileIndex = 0;

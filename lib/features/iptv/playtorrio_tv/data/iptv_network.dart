@@ -148,6 +148,7 @@ class IptvClient {
           }(),
           categoryId: o['category_id']?.toString() ?? '',
           containerExt: ext,
+          epgChannelId: o['epg_channel_id']?.toString() ?? '',
           kind: switch (kind) {
             IptvSection.live => 'live',
             IptvSection.vod => 'vod',
@@ -220,6 +221,76 @@ class IptvClient {
 
   static String episodeUrl(IptvPortal p, IptvEpisode e) =>
       '${p.url}/series/${_enc(p.username)}/${_enc(p.password)}/${e.id}.${e.containerExt}';
+
+  /// Fetches the next [limit] EPG programmes for [streamId] via Xtream's
+  /// `get_short_epg`. Returns an empty list on any failure (no panel EPG,
+  /// timeout, malformed JSON, etc.) so callers can simply hide the row.
+  ///
+  /// Xtream encodes `title` and `description` as base64 strings.
+  static Future<List<EpgEntry>> shortEpg(
+    IptvPortal p,
+    String streamId, {
+    int limit = 2,
+    Duration timeout = const Duration(seconds: 6),
+  }) async {
+    if (streamId.isEmpty) return const [];
+    final url = '${p.url}/player_api.php?username=${_enc(p.username)}'
+        '&password=${_enc(p.password)}'
+        '&action=get_short_epg&stream_id=${_enc(streamId)}&limit=$limit';
+    final text = await _httpGet(url, timeout: timeout);
+    if (text == null) return const [];
+    try {
+      final root = json.decode(text);
+      final List arr = root is Map<String, dynamic>
+          ? (root['epg_listings'] as List? ?? const [])
+          : (root is List ? root : const []);
+      DateTime? parseTs(dynamic v) {
+        if (v == null) return null;
+        final s = v.toString();
+        // Xtream sends both unix-seconds ("start_timestamp") and ISO-ish
+        // strings ("start": "2026-04-25 19:00:00"). Try seconds first.
+        final secs = int.tryParse(s);
+        if (secs != null && secs > 1000000000) {
+          return DateTime.fromMillisecondsSinceEpoch(secs * 1000, isUtc: true)
+              .toLocal();
+        }
+        try {
+          return DateTime.parse(s.replaceFirst(' ', 'T')).toLocal();
+        } catch (_) {
+          return null;
+        }
+      }
+
+      String decode64(dynamic v) {
+        if (v == null) return '';
+        final s = v.toString();
+        if (s.isEmpty) return '';
+        try {
+          return utf8.decode(base64.decode(s), allowMalformed: true).trim();
+        } catch (_) {
+          return s;
+        }
+      }
+
+      final out = <EpgEntry>[];
+      for (final e in arr) {
+        if (e is! Map<String, dynamic>) continue;
+        final start = parseTs(e['start_timestamp']) ?? parseTs(e['start']);
+        final stop = parseTs(e['stop_timestamp']) ?? parseTs(e['end']);
+        if (start == null || stop == null) continue;
+        out.add(EpgEntry(
+          title: decode64(e['title']),
+          description: decode64(e['description']),
+          start: start,
+          stop: stop,
+        ));
+      }
+      out.sort((a, b) => a.start.compareTo(b.start));
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -505,8 +576,13 @@ class IptvScraper {
     r'''(https?://[^?\s"'<]+)\?(?:[^\s"'<]*?&)?(?:username|user)=([^&\s"'<]+)\s*&(?:password|pass)=([^&\s"'<]+)''',
     caseSensitive: false,
   );
+  // Label fallback for posts that don't expose a full /get.php?username=…&password=… URL.
+  // Accepts English ("Host/User/Pass"), Portuguese ("Usuário/Senha"), Spanish ("Usuario/Contraseña"),
+  // unicode smallcaps variants used by WTF-M3U scanners (Hᴏsᴛ / Usᴇʀ / Pᴀss / Usᴜᴀʀɪᴏ / Sᴇɴʜᴀ),
+  // and any combination of decorative separators (➢, ►, :, ., …, whitespace) between the label
+  // and the value. Trailing dots after the label (Raptor's "Host......:") are absorbed by `\W*`.
   static final _label = RegExp(
-    r'''(?:Portal|Host(?:\s*URL)?|Panel|Real|URL|🔗|🌍|🌐):?\s*(https?://[^<\s"']+)[\s\S]{1,500}?(?:Username|User|👤):?\s*([^|\s\n<"']+)[\s\S]{1,200}?(?:Password|Pass|🔑):?\s*([^\s\n<"']+)''',
+    r'''(?:Portal|Host(?:\s*URL)?|H[ᴏo]s[ᴛt]|Panel|Real|URL|🔗|🌍|🌐)\W*?(https?://[^<\s"']+)[\s\S]{1,500}?(?:Username|Usu[áa]rio|Usuario|User|Us[ᴇe]r|Us[ᴜu][ᴀa]r[ɪi][ᴏo]|👤)\W*?([^\s|<"'\n]+)[\s\S]{1,200}?(?:Password|Senha|Contrase[ñn]a|Pass|P[ᴀa]ss|S[ᴇe]nh[ᴀa]|🔑)\W*?([^\s|<"'\n]+)''',
     caseSensitive: false,
   );
 

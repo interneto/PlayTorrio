@@ -2121,11 +2121,12 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
 
           if (useDebrid && debridService != 'None') {
             final debrid = DebridApi();
-            final files = debridService == 'Real-Debrid'
-                ? await debrid.resolveRealDebrid(magnetLink,
-                    season: nextSeason, episode: nextEpisode)
-                : await debrid.resolveTorBox(magnetLink,
-                    season: nextSeason, episode: nextEpisode);
+            final files = await debrid.resolveByService(
+              debridService,
+              magnetLink,
+              season: nextSeason,
+              episode: nextEpisode,
+            );
             if (files.isNotEmpty) {
               fileIndex = 0;
               streamUrl = files.first.downloadUrl;
@@ -2171,11 +2172,12 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
 
         if (useDebrid && debridService != 'None') {
           final debrid = DebridApi();
-          final files = debridService == 'Real-Debrid'
-              ? await debrid.resolveRealDebrid(magnetLink,
-                  season: nextSeason, episode: nextEpisode)
-              : await debrid.resolveTorBox(magnetLink,
-                  season: nextSeason, episode: nextEpisode);
+          final files = await debrid.resolveByService(
+            debridService,
+            magnetLink,
+            season: nextSeason,
+            episode: nextEpisode,
+          );
           if (files.isNotEmpty) {
             fileIndex = 0;
             streamUrl = files.first.downloadUrl;

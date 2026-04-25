@@ -885,17 +885,43 @@ class _BrowserViewState extends State<_BrowserView> {
     }
   }
 
+  /// Categories visible in the sidebar/chips. When the user types a query,
+  /// hide categories whose name doesn't match — but always keep the currently
+  /// selected one so the UI never shows an empty selection.
+  List<IptvCategory> get _filteredCategories {
+    final ctrl = widget.ctrl;
+    final q = ctrl.browserSearch.trim().toLowerCase();
+    if (q.isEmpty) return ctrl.categories;
+    final selected = ctrl.browserSelectedCategoryId;
+    return ctrl.categories.where((c) {
+      if (c.id == selected) return true;
+      // 'All' (id == '') is always useful while searching globally
+      if (c.id.isEmpty) return true;
+      return c.name.toLowerCase().contains(q);
+    }).toList();
+  }
+
   List<IptvStream> get _filteredStreams {
     final ctrl = widget.ctrl;
     var s = ctrl.browserAllStreams;
     final cat = ctrl.browserSelectedCategoryId;
-    if (cat != null && cat.isNotEmpty) {
+    final q = ctrl.browserSearch.trim().toLowerCase();
+
+    if (q.isNotEmpty) {
+      // Search is global across categories AND matches by stream name OR by
+      // the stream's category name. Lookup table built once per filter pass.
+      final catNameById = <String, String>{
+        for (final c in ctrl.categories) c.id: c.name.toLowerCase(),
+      };
+      s = s.where((x) {
+        if (x.name.toLowerCase().contains(q)) return true;
+        final cn = catNameById[x.categoryId];
+        return cn != null && cn.contains(q);
+      }).toList();
+    } else if (cat != null && cat.isNotEmpty) {
       s = s.where((x) => x.categoryId == cat).toList();
     }
-    if (ctrl.browserSearch.isNotEmpty) {
-      final q = ctrl.browserSearch.toLowerCase();
-      s = s.where((x) => x.name.toLowerCase().contains(q)).toList();
-    }
+
     if (ctrl.activeSection == IptvSection.live && ctrl.liveOnly) {
       s = s.where((x) => ctrl.aliveStreamIds.contains(x.streamId)).toList();
     }
@@ -962,7 +988,7 @@ class _BrowserViewState extends State<_BrowserView> {
         style: GoogleFonts.poppins(color: Colors.white, fontSize: 13),
         decoration: InputDecoration(
           prefixIcon: const Icon(Icons.search_rounded, color: Colors.white60),
-          hintText: 'Search…',
+          hintText: 'Search channels or categories…',
           hintStyle: GoogleFonts.poppins(color: Colors.white30, fontSize: 13),
           filled: true,
           fillColor: Colors.white.withValues(alpha: 0.05),
@@ -1070,11 +1096,13 @@ class _BrowserViewState extends State<_BrowserView> {
           right: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
         ),
       ),
-      child: ListView.builder(
+      child: Builder(builder: (_) {
+        final cats = _filteredCategories;
+        return ListView.builder(
         padding: const EdgeInsets.symmetric(vertical: 8),
-        itemCount: ctrl.categories.length,
+        itemCount: cats.length,
         itemBuilder: (_, i) {
-          final c = ctrl.categories[i];
+          final c = cats[i];
           final selected = c.id == ctrl.browserSelectedCategoryId;
           return InkWell(
             onTap: () => ctrl.selectBrowserCategory(c.id),
@@ -1106,7 +1134,8 @@ class _BrowserViewState extends State<_BrowserView> {
             ),
           );
         },
-      ),
+        );
+      }),
     );
   }
 
@@ -1114,12 +1143,14 @@ class _BrowserViewState extends State<_BrowserView> {
     final ctrl = widget.ctrl;
     return SizedBox(
       height: 40,
-      child: ListView.builder(
+      child: Builder(builder: (_) {
+        final cats = _filteredCategories;
+        return ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        itemCount: ctrl.categories.length,
+        itemCount: cats.length,
         itemBuilder: (_, i) {
-          final c = ctrl.categories[i];
+          final c = cats[i];
           final selected = c.id == ctrl.browserSelectedCategoryId;
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
@@ -1137,7 +1168,8 @@ class _BrowserViewState extends State<_BrowserView> {
             ),
           );
         },
-      ),
+        );
+      }),
     );
   }
 
@@ -1163,6 +1195,7 @@ class _BrowserViewState extends State<_BrowserView> {
           itemCount: list.length,
           itemBuilder: (_, i) => _StreamCard(
             stream: list[i],
+            ctrl: widget.ctrl,
             onTap: () => _onStreamTap(list[i]),
           ),
         );
@@ -1191,8 +1224,13 @@ class _BrowserViewState extends State<_BrowserView> {
 
 class _StreamCard extends StatelessWidget {
   final IptvStream stream;
+  final IptvController ctrl;
   final VoidCallback onTap;
-  const _StreamCard({required this.stream, required this.onTap});
+  const _StreamCard({
+    required this.stream,
+    required this.ctrl,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1207,6 +1245,9 @@ class _StreamCard extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
           onTap: onTap,
+          onLongPress: stream.kind == 'live'
+              ? () => _showEpgSheet(context)
+              : null,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -1228,14 +1269,224 @@ class _StreamCard extends StatelessWidget {
               ),
               Padding(
                 padding: const EdgeInsets.all(8),
+                child: Tooltip(
+                  message: stream.name,
+                  waitDuration: const Duration(milliseconds: 600),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 220),
+                      child: Text(
+                        stream.name,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        softWrap: true,
+                        style: GoogleFonts.poppins(
+                            color: Colors.white,
+                            fontSize: 12,
+                            height: 1.15,
+                            fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              if (stream.kind == 'live') _EpgNowFooter(stream: stream, ctrl: ctrl),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showEpgSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF11151C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => _EpgSheet(stream: stream, ctrl: ctrl),
+    );
+  }
+}
+
+/// Tiny "NOW · Title  •  HH:mm–HH:mm" strip rendered at the bottom of a live
+/// `_StreamCard`. Quietly renders nothing while loading or when the panel has
+/// no EPG for this channel — we never want a visible spinner per tile.
+class _EpgNowFooter extends StatelessWidget {
+  final IptvStream stream;
+  final IptvController ctrl;
+  const _EpgNowFooter({required this.stream, required this.ctrl});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<EpgEntry>>(
+      future: ctrl.epgFor(stream),
+      builder: (_, snap) {
+        final data = snap.data;
+        if (data == null || data.isEmpty) return const SizedBox.shrink();
+        final now = data.firstWhere(
+          (e) => e.isNow,
+          orElse: () => data.first,
+        );
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: now.isNow
+                      ? const Color(0xFFEF4444)
+                      : const Color(0xFF00E5FF).withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(3),
+                ),
                 child: Text(
-                  stream.name,
+                  now.isNow ? 'NOW' : 'NEXT',
+                  style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.5),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  now.title.isEmpty ? '—' : now.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.poppins(
+                      color: Colors.white70,
+                      fontSize: 9,
+                      fontWeight: FontWeight.w500),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Long-press detail sheet — lists the next few programmes with start times.
+class _EpgSheet extends StatelessWidget {
+  final IptvStream stream;
+  final IptvController ctrl;
+  const _EpgSheet({required this.stream, required this.ctrl});
+
+  String _fmtTime(DateTime d) =>
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.7,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(stream.name,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: GoogleFonts.poppins(
                       color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: FutureBuilder<List<EpgEntry>>(
+                    // Re-request with a higher limit for the sheet view.
+                    future: IptvClient.shortEpg(
+                      ctrl.activePortal!.portal,
+                      stream.streamId,
+                      limit: 8,
+                    ),
+                    builder: (_, snap) {
+                      if (snap.connectionState != ConnectionState.done) {
+                        return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(
+                      child: CircularProgressIndicator(
+                          color: Color(0xFF00E5FF), strokeWidth: 2),
+                    ),
+                  );
+                }
+                final data = snap.data ?? const <EpgEntry>[];
+                if (data.isEmpty) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Text('No EPG available for this channel.',
+                        style: GoogleFonts.poppins(
+                            color: Colors.white60, fontSize: 12)),
+                  );
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final e in data)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 86,
+                              child: Text(
+                                '${_fmtTime(e.start)}–${_fmtTime(e.stop)}',
+                                style: GoogleFonts.poppins(
+                                    color: e.isNow
+                                        ? const Color(0xFFEF4444)
+                                        : Colors.white60,
+                                    fontSize: 11,
+                                    fontWeight: e.isNow
+                                        ? FontWeight.w700
+                                        : FontWeight.w500),
+                              ),
+                            ),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                      e.title.isEmpty ? '—' : e.title,
+                                      style: GoogleFonts.poppins(
+                                          color: Colors.white,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600)),
+                                  if (e.description.isNotEmpty)
+                                    Padding(
+                                      padding:
+                                          const EdgeInsets.only(top: 2),
+                                      child: Text(
+                                        e.description,
+                                        maxLines: 3,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: GoogleFonts.poppins(
+                                            color: Colors.white60,
+                                            fontSize: 10),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
                 ),
               ),
             ],
@@ -1612,19 +1863,59 @@ class _ChannelResultsView extends StatefulWidget {
 
 class _ChannelResultsViewState extends State<_ChannelResultsView> {
   bool _editMode = false;
-  final Set<int> _selected = {};
+  /// Selection tracks streamUrl, not index, so it stays valid when the
+  /// displayed list is filtered/sorted by the search box & EPG-first sort.
+  final Set<String> _selected = {};
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  /// Sort order: favorites first, then hits whose Xtream stream has an
+  /// `epg_channel_id` (a hint that the panel ships EPG for it), then
+  /// everything else. Stable within each tier so user-curated ordering is
+  /// preserved. Then filter by the search query if set.
+  List<ChannelHit> _displayList(IptvController ctrl) {
+    final channelId = ctrl.activeHardcoded?.id ?? '';
+    final fav = <ChannelHit>[];
+    final epg = <ChannelHit>[];
+    final rest = <ChannelHit>[];
+    for (final h in ctrl.channelResults) {
+      if (ctrl.isFavoriteHit(channelId, h)) {
+        fav.add(h);
+      } else if (h.stream.epgChannelId.isNotEmpty) {
+        epg.add(h);
+      } else {
+        rest.add(h);
+      }
+    }
+    var list = <ChannelHit>[...fav, ...epg, ...rest];
+    final q = _query.trim().toLowerCase();
+    if (q.isNotEmpty) {
+      list = list.where((h) {
+        return h.stream.name.toLowerCase().contains(q) ||
+            h.portal.name.toLowerCase().contains(q);
+      }).toList();
+    }
+    return list;
+  }
 
   @override
   Widget build(BuildContext context) {
     final ctrl = widget.ctrl;
     final ch = ctrl.activeHardcoded;
+    final displayed = _displayList(ctrl);
     return SafeArea(
       child: Column(
         children: [
           _PtAppBar(
             title: ch?.name ?? 'Channel',
             subtitle: ctrl.channelStatus.isEmpty
-                ? '${ctrl.channelResults.length} hits'
+                ? '${displayed.length}${_query.isEmpty ? '' : '/${ctrl.channelResults.length}'} hits'
                 : ctrl.channelStatus,
             onBack: ctrl.back,
             actions: [
@@ -1644,6 +1935,49 @@ class _ChannelResultsViewState extends State<_ChannelResultsView> {
                 ),
             ],
           ),
+          if (ctrl.channelResults.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+              child: TextField(
+                controller: _searchCtrl,
+                onChanged: (v) => setState(() => _query = v),
+                style: GoogleFonts.poppins(color: Colors.white, fontSize: 14),
+                decoration: InputDecoration(
+                  hintText: 'Search hits…',
+                  hintStyle: GoogleFonts.poppins(
+                      color: Colors.white38, fontSize: 14),
+                  prefixIcon: const Icon(Icons.search_rounded,
+                      color: Colors.white54),
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.close_rounded,
+                              color: Colors.white54),
+                          onPressed: () {
+                            _searchCtrl.clear();
+                            setState(() => _query = '');
+                          },
+                        ),
+                  filled: true,
+                  fillColor: const Color(0xFF1A1A22),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 10),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(
+                        color: Color(0xFF00E5FF), width: 1.2),
+                  ),
+                ),
+              ),
+            ),
           if (_editMode && ctrl.channelResults.isNotEmpty)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1660,25 +1994,31 @@ class _ChannelResultsViewState extends State<_ChannelResultsView> {
                   TextButton.icon(
                     onPressed: () {
                       setState(() {
-                        final total = ctrl.channelResults.length;
-                        if (_selected.length == total) {
-                          _selected.clear();
+                        // Select-all operates on the currently DISPLAYED list
+                        // so users can bulk-select within a search filter.
+                        final urls = displayed.map((h) => h.streamUrl).toSet();
+                        final allSelected =
+                            urls.isNotEmpty && _selected.containsAll(urls);
+                        if (allSelected) {
+                          _selected.removeAll(urls);
                         } else {
-                          _selected
-                            ..clear()
-                            ..addAll(List.generate(total, (i) => i));
+                          _selected.addAll(urls);
                         }
                       });
                     },
                     icon: Icon(
-                      _selected.length == ctrl.channelResults.length
+                      displayed.isNotEmpty &&
+                              _selected.containsAll(
+                                  displayed.map((h) => h.streamUrl))
                           ? Icons.deselect_rounded
                           : Icons.select_all_rounded,
                       color: const Color(0xFF00E5FF),
                       size: 18,
                     ),
                     label: Text(
-                      _selected.length == ctrl.channelResults.length
+                      displayed.isNotEmpty &&
+                              _selected.containsAll(
+                                  displayed.map((h) => h.streamUrl))
                           ? 'Clear'
                           : 'Select all',
                       style: GoogleFonts.poppins(
@@ -1691,7 +2031,18 @@ class _ChannelResultsViewState extends State<_ChannelResultsView> {
                     IconButton(
                       tooltip: 'Delete selected',
                       onPressed: () async {
-                        await ctrl.deleteChannelHits(Set.from(_selected));
+                        // Selection is by streamUrl; map back to source
+                        // indices for the controller API.
+                        final indices = <int>{};
+                        for (var i = 0;
+                            i < ctrl.channelResults.length;
+                            i++) {
+                          if (_selected.contains(
+                              ctrl.channelResults[i].streamUrl)) {
+                            indices.add(i);
+                          }
+                        }
+                        await ctrl.deleteChannelHits(indices);
                         setState(() {
                           _selected.clear();
                           _editMode = false;
@@ -1707,7 +2058,15 @@ class _ChannelResultsViewState extends State<_ChannelResultsView> {
           Expanded(
             child: ctrl.channelResults.isEmpty
                 ? _buildEmpty()
-                : _buildResults(),
+                : displayed.isEmpty
+                    ? Center(
+                        child: Text(
+                          'No hits match “$_query”.',
+                          style: GoogleFonts.poppins(
+                              color: Colors.white54, fontSize: 14),
+                        ),
+                      )
+                    : _buildResults(displayed),
           ),
           _buildBottomBar(),
         ],
@@ -1784,7 +2143,7 @@ class _ChannelResultsViewState extends State<_ChannelResultsView> {
     );
   }
 
-  Widget _buildResults() {
+  Widget _buildResults(List<ChannelHit> displayed) {
     final ctrl = widget.ctrl;
     return LayoutBuilder(
       builder: (_, c) {
@@ -1795,14 +2154,15 @@ class _ChannelResultsViewState extends State<_ChannelResultsView> {
             crossAxisCount: cross,
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
-            mainAxisExtent: 96,
+            mainAxisExtent: 132,
           ),
-          itemCount: ctrl.channelResults.length,
+          itemCount: displayed.length,
           itemBuilder: (_, i) {
-            final hit = ctrl.channelResults[i];
-            final selected = _selected.contains(i);
+            final hit = displayed[i];
+            final selected = _selected.contains(hit.streamUrl);
             return _ChannelHitCard(
               hit: hit,
+              ctrl: ctrl,
               editMode: _editMode,
               selected: selected,
               isFavorite: ctrl.isFavoriteHit(
@@ -1812,14 +2172,16 @@ class _ChannelResultsViewState extends State<_ChannelResultsView> {
                 if (_editMode) {
                   setState(() {
                     if (selected) {
-                      _selected.remove(i);
+                      _selected.remove(hit.streamUrl);
                     } else {
-                      _selected.add(i);
+                      _selected.add(hit.streamUrl);
                     }
                   });
                 } else {
                   // Put the tapped hit first so the player actually opens it,
                   // and keep the rest as failover sources for the watchdog.
+                  // Use the full original results list (not filtered) so the
+                  // watchdog has every fallback available.
                   final ordered = [
                     hit,
                     ...ctrl.channelResults.where((h) => h != hit),
@@ -1837,7 +2199,7 @@ class _ChannelResultsViewState extends State<_ChannelResultsView> {
                 if (!_editMode) {
                   setState(() {
                     _editMode = true;
-                    _selected.add(i);
+                    _selected.add(hit.streamUrl);
                   });
                 }
               },
@@ -1884,6 +2246,7 @@ class _ChannelResultsViewState extends State<_ChannelResultsView> {
 
 class _ChannelHitCard extends StatelessWidget {
   final ChannelHit hit;
+  final IptvController ctrl;
   final bool editMode;
   final bool selected;
   final bool isFavorite;
@@ -1892,6 +2255,7 @@ class _ChannelHitCard extends StatelessWidget {
   final VoidCallback onToggleFavorite;
   const _ChannelHitCard({
     required this.hit,
+    required this.ctrl,
     required this.editMode,
     required this.selected,
     required this.isFavorite,
@@ -1956,19 +2320,27 @@ class _ChannelHitCard extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text(hit.stream.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: GoogleFonts.poppins(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600)),
+                      Tooltip(
+                        message: hit.stream.name,
+                        waitDuration: const Duration(milliseconds: 600),
+                        child: Text(hit.stream.name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            softWrap: true,
+                            style: GoogleFonts.poppins(
+                                color: Colors.white,
+                                fontSize: 12,
+                                height: 1.2,
+                                fontWeight: FontWeight.w600)),
+                      ),
                       const SizedBox(height: 4),
                       Text('via ${_portalLabel(hit.portal)}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
+                          softWrap: false,
                           style: GoogleFonts.poppins(
-                              color: Colors.white60, fontSize: 11)),
+                              color: Colors.white60, fontSize: 10)),
+                      _HitEpgNowRow(hit: hit, ctrl: ctrl),
                     ],
                   ),
                 ),
@@ -2004,5 +2376,65 @@ class _ChannelHitCard extends StatelessWidget {
       return _redactUrl(n);
     }
     return n;
+  }
+}
+
+/// Compact `[NOW] Programme` row rendered under the "via …" line on a hit
+/// card. Stays empty (zero-height) when the portal has no EPG for this stream
+/// so card layout doesn't shift visibly while loading.
+class _HitEpgNowRow extends StatelessWidget {
+  final ChannelHit hit;
+  final IptvController ctrl;
+  const _HitEpgNowRow({required this.hit, required this.ctrl});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<EpgEntry>>(
+      future: ctrl.epgForHit(hit),
+      builder: (_, snap) {
+        final data = snap.data;
+        if (data == null || data.isEmpty) return const SizedBox.shrink();
+        final now = data.firstWhere(
+          (e) => e.isNow,
+          orElse: () => data.first,
+        );
+        return Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: now.isNow
+                      ? const Color(0xFFEF4444)
+                      : const Color(0xFF00E5FF).withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                child: Text(
+                  now.isNow ? 'NOW' : 'NEXT',
+                  style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.5),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  now.title.isEmpty ? '—' : now.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.poppins(
+                      color: Colors.white70,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 }

@@ -45,6 +45,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _debridService = 'None';
   final TextEditingController _addonController = TextEditingController();
   final TextEditingController _torboxController = TextEditingController();
+  final TextEditingController _alldebridController = TextEditingController();
+  final TextEditingController _premiumizeController = TextEditingController();
+  final TextEditingController _debridlinkController = TextEditingController();
   
   // Jackett
   final TextEditingController _jackettUrlController = TextEditingController();
@@ -121,6 +124,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final service = await _settings.getDebridService();
     final addons = await _settings.getStremioAddons();
     final torboxKey = await _debrid.getTorBoxKey();
+    final alldebridKey = await _debrid.getAllDebridKey();
+    final premiumizeKey = await _debrid.getPremiumizeKey();
+    final debridlinkKey = await _debrid.getDebridLinkKey();
     final rdToken = await _debrid.getRDAccessToken();
     
     // Load Trakt status
@@ -189,6 +195,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _useDebrid = useDebrid;
         _debridService = service;
         _torboxController.text = torboxKey ?? '';
+        _alldebridController.text = alldebridKey ?? '';
+        _premiumizeController.text = premiumizeKey ?? '';
+        _debridlinkController.text = debridlinkKey ?? '';
         _isRDLoggedIn = rdToken != null;
         _isTraktLoggedIn = traktLoggedIn;
         _traktUsername = traktUser;
@@ -251,6 +260,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _addonController.dispose();
     _torboxController.dispose();
+    _alldebridController.dispose();
+    _premiumizeController.dispose();
+    _debridlinkController.dispose();
     _jackettUrlController.dispose();
     _jackettApiKeyController.dispose();
     _prowlarrUrlController.dispose();
@@ -275,18 +287,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    setState(() => _isVerifyingRD = true);
-    final user = await _debrid.verifyRDApiKey(key);
-    if (user == null) {
-      if (mounted) {
-        setState(() => _isVerifyingRD = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Invalid Real-Debrid API key')),
-        );
-      }
-      return;
-    }
-
+    // Just save the key — no verify round-trip. The verify call hangs forever
+    // on macOS for some users, leaving the spinner stuck. If the key is wrong
+    // they'll find out the first time they try to stream.
     await _debrid.saveRDApiKey(key);
     if (!mounted) return;
     setState(() {
@@ -294,9 +297,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _isVerifyingRD = false;
       _rdController.clear();
     });
-    final username = user['username']?.toString() ?? 'Real-Debrid';
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Logged in as $username')),
+      const SnackBar(content: Text('Real-Debrid API key saved')),
     );
   }
 
@@ -525,7 +527,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           'Debrid Service',
                           'Select your preferred provider.',
                           _debridService,
-                          ['None', 'Real-Debrid', 'TorBox'],
+                          ['None', 'Real-Debrid', 'TorBox', 'AllDebrid', 'Premiumize', 'Debrid-Link'],
                           (val) async {
                             if (val != null) {
                               await _settings.setDebridService(val);
@@ -535,6 +537,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         if (_debridService == 'Real-Debrid') _buildRDLogin(),
                         if (_debridService == 'TorBox') _buildTorBoxConfig(),
+                        if (_debridService == 'AllDebrid') _buildAllDebridConfig(),
+                        if (_debridService == 'Premiumize') _buildPremiumizeConfig(),
+                        if (_debridService == 'Debrid-Link') _buildDebridLinkConfig(),
                       ],
                     ),
 
@@ -594,7 +599,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const SizedBox(height: 40),
                     const Center(
                       child: Text(
-                        'PlayTorrio Native v1.2.1',
+                        'PlayTorrio Native v1.2.2',
                         style: TextStyle(color: Colors.white24, fontSize: 12, letterSpacing: 2, fontWeight: FontWeight.bold),
                       ),
                     ),
@@ -1199,6 +1204,177 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: const Text('Save', style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAllDebridConfig() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('API Key', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _alldebridController,
+                  obscureText: true,
+                  decoration: InputDecoration(
+                    hintText: 'Enter AllDebrid API Key',
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.05),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              ElevatedButton(
+                onPressed: () async {
+                  await _debrid.saveAllDebridKey(_alldebridController.text);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('AllDebrid API Key Saved!')));
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.primaryColor,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Save', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          InkWell(
+            onTap: () async {
+              final url = Uri.parse('https://alldebrid.com/apikeys');
+              if (await canLaunchUrl(url)) {
+                await launchUrl(url, mode: LaunchMode.externalApplication);
+              }
+            },
+            child: const Text(
+              'Get your API key at alldebrid.com/apikeys',
+              style: TextStyle(color: AppTheme.primaryColor, fontSize: 12, decoration: TextDecoration.underline),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPremiumizeConfig() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('API Key', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _premiumizeController,
+                  obscureText: true,
+                  decoration: InputDecoration(
+                    hintText: 'Enter Premiumize API Key',
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.05),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              ElevatedButton(
+                onPressed: () async {
+                  await _debrid.savePremiumizeKey(_premiumizeController.text);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Premiumize API Key Saved!')));
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.primaryColor,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Save', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          InkWell(
+            onTap: () async {
+              final url = Uri.parse('https://www.premiumize.me/account');
+              if (await canLaunchUrl(url)) {
+                await launchUrl(url, mode: LaunchMode.externalApplication);
+              }
+            },
+            child: const Text(
+              'Get your API key at premiumize.me/account',
+              style: TextStyle(color: AppTheme.primaryColor, fontSize: 12, decoration: TextDecoration.underline),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDebridLinkConfig() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('API Key', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _debridlinkController,
+                  obscureText: true,
+                  decoration: InputDecoration(
+                    hintText: 'Enter Debrid-Link API Key',
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.05),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              ElevatedButton(
+                onPressed: () async {
+                  await _debrid.saveDebridLinkKey(_debridlinkController.text);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Debrid-Link API Key Saved!')));
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.primaryColor,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Save', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          InkWell(
+            onTap: () async {
+              final url = Uri.parse('https://debrid-link.com/webapp/apikey');
+              if (await canLaunchUrl(url)) {
+                await launchUrl(url, mode: LaunchMode.externalApplication);
+              }
+            },
+            child: const Text(
+              'Get your API key at debrid-link.com/webapp/apikey',
+              style: TextStyle(color: AppTheme.primaryColor, fontSize: 12, decoration: TextDecoration.underline),
+            ),
           ),
         ],
       ),

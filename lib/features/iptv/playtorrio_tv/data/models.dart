@@ -72,6 +72,10 @@ class IptvStream {
   final String categoryId;
   final String containerExt;
   final String kind;
+  /// Xtream `epg_channel_id` — empty when the panel doesn't ship EPG for this
+  /// channel. We don't actually need it for `get_short_epg` (that endpoint is
+  /// indexed by stream_id) but it's a useful "has EPG?" hint to skip cards.
+  final String epgChannelId;
 
   const IptvStream({
     required this.streamId,
@@ -80,7 +84,27 @@ class IptvStream {
     required this.categoryId,
     required this.containerExt,
     required this.kind,
+    this.epgChannelId = '',
   });
+}
+
+/// Single EPG programme entry returned by Xtream `get_short_epg`.
+class EpgEntry {
+  final String title;
+  final String description;
+  final DateTime start;
+  final DateTime stop;
+  const EpgEntry({
+    required this.title,
+    required this.description,
+    required this.start,
+    required this.stop,
+  });
+
+  bool get isNow {
+    final now = DateTime.now();
+    return now.isAfter(start) && now.isBefore(stop);
+  }
 }
 
 class IptvEpisode {

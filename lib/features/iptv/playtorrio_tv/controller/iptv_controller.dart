@@ -70,6 +70,46 @@ class IptvController extends ChangeNotifier {
   int? aliveCheckedAt;
   bool _aliveCancel = false;
 
+  // ── EPG cache (live section only) ──
+  /// Memoised `get_short_epg` results per stream for the current portal+section.
+  /// Key = streamId. `null` value means "fetch in flight or finished with no
+  /// data"; absent key means "not yet requested". Cleared on portal/section
+  /// change. Wrapped in a Future so concurrent card builds dedupe to one call.
+  final Map<String, Future<List<EpgEntry>>> _epgCache = {};
+
+  /// Lazy EPG fetch for a live stream. Returns the cached future (or fires a
+  /// new request) so multiple `_StreamCard`s for the same id share one call.
+  /// Safe to call from `FutureBuilder` — the Future is stable across rebuilds.
+  Future<List<EpgEntry>> epgFor(IptvStream s) {
+    final p = activePortal;
+    if (p == null || s.kind != 'live' || s.streamId.isEmpty) {
+      return Future.value(const []);
+    }
+    return _epgCache.putIfAbsent(
+      s.streamId,
+      () => IptvClient.shortEpg(p.portal, s.streamId, limit: 2),
+    );
+  }
+
+  /// EPG cache for ChannelHit cards (Channels Hub). Keyed by
+  /// `portal.key|streamId` because hits come from many different portals.
+  /// Lives for the controller's lifetime — re-running a scan on the same
+  /// channel typically yields overlapping hits, so reuse is desirable.
+  final Map<String, Future<List<EpgEntry>>> _hitEpgCache = {};
+
+  /// Lazy EPG fetch for a hardcoded-channel hit. Same dedupe semantics as
+  /// [epgFor] but keyed per (portal, stream).
+  Future<List<EpgEntry>> epgForHit(ChannelHit h) {
+    if (h.stream.kind != 'live' || h.stream.streamId.isEmpty) {
+      return Future.value(const []);
+    }
+    final key = '${h.portal.key}|${h.stream.streamId}';
+    return _hitEpgCache.putIfAbsent(
+      key,
+      () => IptvClient.shortEpg(h.portal.portal, h.stream.streamId, limit: 2),
+    );
+  }
+
   // ── Channels Hub ──
   HardcodedChannel? activeHardcoded;
   String channelStatus = '';
@@ -418,6 +458,7 @@ class IptvController extends ChangeNotifier {
     browserSearch = '';
     aliveStreamIds = const {};
     aliveCheckedAt = null;
+    _epgCache.clear();
     notifyListeners();
     try {
       final cats = await IptvClient.categories(p.portal, section);
