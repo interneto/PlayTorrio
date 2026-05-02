@@ -3,6 +3,8 @@
 // 1:1 Dart port of server.js, copied verbatim from 111477service.dart.
 // Pure dart:io, no external dependencies.
 //
+// ignore_for_file: library_private_types_in_public_api
+//
 // This CDN rate-limits by REQUEST COUNT (every range request is a strike,
 // 429 with multi-minute Retry-After). So we do the opposite of chunking:
 //   * Open ONE long-lived upstream GET starting at byte 0 (or wherever
@@ -297,7 +299,9 @@ class _Captcha {
 _Captcha? parseCaptcha(String html) {
   if (html.isEmpty) return null;
   if (!RegExp(r'Download Locked|captchaForm|/unlock/', caseSensitive: false)
-      .hasMatch(html)) return null;
+      .hasMatch(html)) {
+    return null;
+  }
   final qMatch = RegExp(
       r'<div class="question"[^>]*>\s*([^<]+?)\s*=\s*\?\s*</div>',
       caseSensitive: false).firstMatch(html);
@@ -1020,7 +1024,9 @@ Future<void> startDownloader(int fromOffset) async {
             '✓ download complete (${(total / 1048576).toStringAsFixed(2)} MiB)');
       } else {
         var got = 0;
-        for (final v in chunkBytes.values) got += v;
+        for (final v in chunkBytes.values) {
+          got += v;
+        }
         stdout.writeln(
             '  upstream reached EOF (${chunkBytes.length} chunk(s) cached, '
             '${(got / 1048576).toStringAsFixed(2)} / ${(total / 1048576).toStringAsFixed(2)} MiB)');
@@ -1310,7 +1316,9 @@ Future<String> start111477Proxy(
   _scanChunks();
   if (chunkBytes.isNotEmpty) {
     var got = 0;
-    for (final v in chunkBytes.values) got += v;
+    for (final v in chunkBytes.values) {
+      got += v;
+    }
     stdout.writeln(
         '  resumed: ${chunkBytes.length} chunk(s), '
         '${(got / 1048576).toStringAsFixed(2)} MiB on disk');

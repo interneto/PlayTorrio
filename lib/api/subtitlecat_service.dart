@@ -7,13 +7,13 @@ import 'package:http/http.dart' as http;
 /// SubtitleCat scraper.
 ///
 /// Mirrors the behaviour of subtitlecat.com:
-///   • Search:   https://www.subtitlecat.com/index.php?search=<query>
-///   • Detail:   https://www.subtitlecat.com/subs/<id>/<name>.html
-///   • Direct download: <a id="download_<lang>" href="/subs/<id>/<name>-<lang>.srt">
-///   • Missing language → translate the orig SRT via Google Translate
-///     (translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=<lang>&dt=t&q=<text>)
+///   - Search:   `https://www.subtitlecat.com/index.php?search=<query>`
+///   - Detail:   `https://www.subtitlecat.com/subs/<id>/<name>.html`
+///   - Direct download: `<a id="download_<lang>" href="/subs/<id>/<name>-<lang>.srt">`
+///   - Missing language → translate the orig SRT via Google Translate
+///     (`translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=<lang>&dt=t&q=<text>`)
 ///     and reassemble. Replicates `translate_from_server_folder` from
-///     /js/translate.js.
+///     `/js/translate.js`.
 class SubtitleCatService {
   SubtitleCatService._();
   static final SubtitleCatService instance = SubtitleCatService._();

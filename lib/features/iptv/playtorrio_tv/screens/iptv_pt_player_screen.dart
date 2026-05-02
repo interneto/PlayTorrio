@@ -121,7 +121,6 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
   static const Duration _healthyStreakNeeded = Duration(seconds: 8);
   static const int _maxRetries = 8;
   // Tier thresholds (ms)
-  static const int _tier1StallMs = 2000; // fast stop→open
   static const int _tier2StallMs = 5000; // full recreate
   final List<int> _backoffMs = const [300, 600, 1000, 1500, 2000, 3000, 4000, 5000];
 
@@ -300,7 +299,9 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
       if (lower.contains('cannot seek') ||
           lower.contains('force-seekable') ||
           lower.contains("expected '=' and a value") ||
-          lower.contains('live=1')) return;
+          lower.contains('live=1')) {
+        return;
+      }
       debugPrint('[IPTV Player] error: $msg');
       _triggerRecovery(reason: 'error: $msg');
     });
@@ -372,7 +373,9 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
     final now = DateTime.now();
     // Throttle: don't trigger again within 1s of last recovery
     if (_lastRecoveryAt != null &&
-        now.difference(_lastRecoveryAt!).inMilliseconds < 1000) return;
+        now.difference(_lastRecoveryAt!).inMilliseconds < 1000) {
+      return;
+    }
 
     _recoveryInFlight = true;
     _lastRecoveryAt = now;
@@ -555,7 +558,7 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
                   valueColor: AlwaysStoppedAnimation(
-                    Colors.white.withOpacity(0.9),
+                    Colors.white.withValues(alpha: 0.9),
                   ),
                 ),
               ),
@@ -606,10 +609,10 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
           child: Container(
             padding: const EdgeInsets.fromLTRB(8, 12, 16, 12),
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.35),
+              color: Colors.black.withValues(alpha: 0.35),
               border: Border(
                 bottom: BorderSide(
-                  color: Colors.white.withOpacity(0.08),
+                  color: Colors.white.withValues(alpha: 0.08),
                   width: 0.5,
                 ),
               ),
@@ -822,7 +825,7 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
             Container(
               width: 1,
               height: 22,
-              color: Colors.white.withOpacity(0.15),
+              color: Colors.white.withValues(alpha: 0.15),
             ),
             const SizedBox(width: 4),
             // Source picker
@@ -893,15 +896,15 @@ class _LiveDot extends StatelessWidget {
       children: [
         AnimatedBuilder(
           animation: pulse,
-          builder: (_, __) => Container(
+          builder: (_, _) => Container(
             width: 7,
             height: 7,
             decoration: BoxDecoration(
-              color: Colors.redAccent.withOpacity(pulse.value),
+              color: Colors.redAccent.withValues(alpha: pulse.value),
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color: Colors.red.withOpacity(pulse.value * 0.6),
+                  color: Colors.red.withValues(alpha: pulse.value * 0.6),
                   blurRadius: 4,
                   spreadRadius: 1,
                 ),
@@ -946,10 +949,10 @@ class _GlassCard extends StatelessWidget {
         child: Container(
           padding: padding,
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.10),
+            color: Colors.white.withValues(alpha: 0.10),
             borderRadius: BorderRadius.circular(borderRadius),
             border: Border.all(
-              color: Colors.white.withOpacity(0.15),
+              color: Colors.white.withValues(alpha: 0.15),
               width: 0.8,
             ),
           ),
@@ -1043,11 +1046,11 @@ class _SourcePickerSheet extends StatelessWidget {
           filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
           child: Container(
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.72),
+              color: Colors.black.withValues(alpha: 0.72),
               borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
               border: Border(
                 top: BorderSide(
-                  color: Colors.white.withOpacity(0.12),
+                  color: Colors.white.withValues(alpha: 0.12),
                   width: 0.8,
                 ),
               ),
@@ -1084,7 +1087,7 @@ class _SourcePickerSheet extends StatelessWidget {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 10, vertical: 4),
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.08),
+                            color: Colors.white.withValues(alpha: 0.08),
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
@@ -1123,12 +1126,12 @@ class _SourcePickerSheet extends StatelessWidget {
                                     horizontal: 16, vertical: 14),
                                 decoration: BoxDecoration(
                                   color: active
-                                      ? Colors.white.withOpacity(0.12)
-                                      : Colors.white.withOpacity(0.04),
+                                      ? Colors.white.withValues(alpha: 0.12)
+                                      : Colors.white.withValues(alpha: 0.04),
                                   borderRadius: BorderRadius.circular(16),
                                   border: Border.all(
                                     color: active
-                                        ? Colors.white.withOpacity(0.25)
+                                        ? Colors.white.withValues(alpha: 0.25)
                                         : Colors.transparent,
                                     width: 0.8,
                                   ),

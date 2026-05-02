@@ -1866,7 +1866,7 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
                           onTap: () async {
                             _selectedExternalSubUrl = s['url'];
                             await _loadOnlineSubtitle(s);
-                            if (mounted) Navigator.pop(context);
+                            if (context.mounted) Navigator.pop(context);
                           },
                         );
                       }),

@@ -303,6 +303,35 @@ class TmdbApi {
     }
   }
 
+  /// TMDB's curated recommendations (much better than `/similar` which is just
+  /// keyword/genre overlap). For TV shows like Vampire Diaries this returns
+  /// The Originals, Legacies, Teen Wolf, etc.
+  Future<List<Movie>> getMovieRecommendations(int movieId) async {
+    final response = await http.get(
+      Uri.parse('$_baseUrl/movie/$movieId/recommendations?api_key=$_apiKey'),
+    );
+    if (response.statusCode == 200) {
+      final decoded = jsonDecode(response.body);
+      return (decoded['results'] as List)
+          .map((json) => Movie.fromJson(json, mediaType: 'movie'))
+          .toList();
+    }
+    throw Exception('Failed to load movie recommendations');
+  }
+
+  Future<List<Movie>> getTvRecommendations(int tvId) async {
+    final response = await http.get(
+      Uri.parse('$_baseUrl/tv/$tvId/recommendations?api_key=$_apiKey'),
+    );
+    if (response.statusCode == 200) {
+      final decoded = jsonDecode(response.body);
+      return (decoded['results'] as List)
+          .map((json) => Movie.fromJson(json, mediaType: 'tv'))
+          .toList();
+    }
+    throw Exception('Failed to load TV recommendations');
+  }
+
   /// Find a movie/tv show by its IMDB ID via TMDB's /find endpoint.
   Future<Movie?> findByImdbId(String imdbId, {String mediaType = 'movie'}) async {
     final response = await http.get(

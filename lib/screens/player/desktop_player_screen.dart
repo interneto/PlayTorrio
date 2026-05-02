@@ -1660,7 +1660,7 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
                               : null,
                           onTap: () async {
                             await _loadOnlineSubtitle(s);
-                            if (mounted) Navigator.pop(context);
+                            if (context.mounted) Navigator.pop(context);
                           },
                         );
                       }),

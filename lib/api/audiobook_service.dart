@@ -514,29 +514,26 @@ class AudiobookService {
 
   Future<List<Audiobook>> _searchAppAudiobooks(String query) async {
     try {
-      final searchUrl = 'https://appaudiobooks.net/wp-admin/admin-ajax.php'
-          '?s=${Uri.encodeComponent(query)}'
-          '&action=searchwp_live_search'
-          '&swpengine=default'
-          '&swpquery=${Uri.encodeComponent(query)}'
-          '&origin_id=0';
+      final searchUrl =
+          'https://appaudiobooks.com/?s=${Uri.encodeComponent(query)}';
 
       final response = await http.get(Uri.parse(searchUrl), headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://appaudiobooks.net/',
+        'Referer': 'https://appaudiobooks.com/',
       });
 
       if (response.statusCode != 200) return [];
 
       final document = hp.parse(response.body);
-      final links = document.querySelectorAll('a[href]');
+      // Standard WordPress search results: each post has <h2 class="entry-title"><a href="...">Title</a></h2>
+      final links = document.querySelectorAll('h2.entry-title a, h2.post-title a, article h2 a');
 
       List<Audiobook> results = [];
       final seen = <String>{};
 
       for (var link in links) {
         final pageUrl = link.attributes['href'] ?? '';
-        if (pageUrl.isEmpty || !pageUrl.contains('appaudiobooks.net')) continue;
+        if (pageUrl.isEmpty || !pageUrl.contains('appaudiobooks.')) continue;
         if (seen.contains(pageUrl)) continue;
         seen.add(pageUrl);
 
