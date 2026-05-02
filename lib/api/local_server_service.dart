@@ -7,6 +7,7 @@ import 'package:shelf/shelf_io.dart' as io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:flutter/foundation.dart';
 import '../scrapers/scraper_aggregator.dart';
+import 'subtitlecat_service.dart';
 
 class LocalServerService {
   static final LocalServerService _instance = LocalServerService._internal();
@@ -71,6 +72,39 @@ class LocalServerService {
 
     _router.get('/health', (Request request) {
       return Response.ok(json.encode({'status': 'ok', 'port': _port}), headers: {'content-type': 'application/json'});
+    });
+
+    // --- SubtitleCat on-demand translation ---
+    // GET /subtitlecat-translate?orig=<absolute orig.srt URL>&tl=<lang>&name=<base>
+    // Returns the translated SRT text/plain.
+    _router.get('/subtitlecat-translate', (Request request) async {
+      final p = request.url.queryParameters;
+      final orig = p['orig'];
+      final tl = p['tl'];
+      final name = p['name'] ?? 'subtitle';
+      if (orig == null || orig.isEmpty || tl == null || tl.isEmpty) {
+        return Response(400,
+            body: 'Missing orig or tl',
+            headers: {'content-type': 'text/plain'});
+      }
+      try {
+        final srt = await SubtitleCatService.instance.translateSrt(
+          origUrl: orig,
+          targetLang: tl,
+        );
+        return Response.ok(srt, headers: {
+          'Content-Type': 'application/x-subrip; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+          'Content-Disposition':
+              'inline; filename="$name-$tl.srt"',
+        });
+      } catch (e) {
+        debugPrint('[SubtitleCat] translate failed: $e');
+        return Response.internalServerError(
+          body: 'Translation failed: $e',
+          headers: {'content-type': 'text/plain'},
+        );
+      }
     });
   }
 

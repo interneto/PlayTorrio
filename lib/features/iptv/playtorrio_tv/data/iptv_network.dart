@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' as io;
+import 'dart:math' as math;
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'models.dart';
@@ -535,6 +538,15 @@ class IptvAliveChecker {
 // ─────────────────────────────────────────────────────────────────────────────
 // Catalog Xtream-Codes scraper
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Which backend the catalog scraper should pull from. The labels are
+/// intentionally opaque (best/fastest/works) so the underlying source
+/// names aren't surfaced in the UI.
+///   - [best]    → curated pre-validated database (highest hit rate)
+///   - [fastest] → quick plain-text dumps
+///   - [works]   → freshest community catalog (volatile)
+enum CatalogSource { best, fastest, works }
+
 class IptvScraper {
   // Reddit's `.json` endpoint returns an HTML interstitial for browser-like
   // User-Agents (anti-scraping). We therefore query the old.reddit.com host
@@ -590,7 +602,316 @@ class IptvScraper {
     'type=m3u', 'output=ts', 'password=', 'username=', 'password', 'username',
   ];
 
-  static Future<ScrapePage> scrapeCatalogPage(
+  // ── Cloudflare R2: Xtreamity-Plus precompiled portal database. ──────
+  // Source: cracked from Mohcin Bajja's `app.xtream.codegenerator` Android
+  // app. The app downloads ONE gzipped CSV from Cloudflare R2 with ~8 000
+  // pre-validated working portals. We sign the GET with AWS SigV4 (R2 is
+  // S3-compatible) and reuse the result for [_xtreamityTtl].
+  // CSV schema per row:
+  //   url, username, password, "MM/DD/YYYY", " HH:MM", region
+  // (the date contains a comma so it spans 2 cells — we don't need it.)
+  static const _xtreamityHost =
+      '145ef3f7a9832804bef0e31548db8a83.r2.cloudflarestorage.com';
+  static const _xtreamityBucket = 'xtreamity';
+  static const _xtreamityObject = 'xtreamity-plus-db.csv.gz';
+  static const _xtreamityAccessKey = '4b36152b6b64b8a9f4d7010b84f535fc';
+  static const _xtreamitySecretKey =
+      '7ad1ed517b6baa6af2fa00d50a1a18b0ce416bb0b6fb14f4c122a2960f1ab9bc';
+  static const _xtreamityTtl = Duration(hours: 6);
+
+  static List<IptvPortal>? _xtreamityPortals;
+  static DateTime? _xtreamityFetchedAt;
+
+  static Future<List<IptvPortal>> _getXtreamityPortals() async {
+    final cached = _xtreamityPortals;
+    final at = _xtreamityFetchedAt;
+    if (cached != null &&
+        at != null &&
+        DateTime.now().difference(at) < _xtreamityTtl) {
+      return cached;
+    }
+    try {
+      final bytes = await _xtreamityFetchObject();
+      if (bytes != null) {
+        final csv = utf8.decode(io.GZipCodec().decode(bytes),
+            allowMalformed: true);
+        final lines = csv.split('\n');
+        final portals = <IptvPortal>[];
+        for (final raw in lines) {
+          final line = raw.trim();
+          if (line.isEmpty) continue;
+          final cols = line.split(',');
+          if (cols.length < 3) continue;
+          final url = cols[0].trim();
+          final user = cols[1].trim();
+          final pass = cols[2].trim();
+          if (url.isEmpty || user.isEmpty || pass.isEmpty) continue;
+          if (!url.toLowerCase().startsWith('http')) continue;
+          portals.add(IptvPortal(
+              url: url,
+              username: user,
+              password: pass,
+              source: 'Xtreamity'));
+        }
+        // Shuffle so we don't only test a single region's portals first.
+        portals.shuffle();
+        _xtreamityPortals = portals;
+        _xtreamityFetchedAt = DateTime.now();
+        debugPrint(
+            '[Xtreamity] loaded ${portals.length} portals from R2 (shuffled)');
+        return portals;
+      }
+    } catch (e) {
+      debugPrint('[Xtreamity] fetch/parse failed: $e');
+    }
+    // Cache empty result briefly so we don't hammer R2 on every press.
+    _xtreamityPortals = const [];
+    _xtreamityFetchedAt = DateTime.now();
+    return const [];
+  }
+
+  static Future<List<int>?> _xtreamityFetchObject() async {
+    final now = DateTime.now().toUtc();
+    final amzDate = _amzDate(now); // 20260502T123045Z
+    final dateStamp = amzDate.substring(0, 8);
+    const region = 'auto';
+    const service = 's3';
+    final path = '/$_xtreamityBucket/$_xtreamityObject';
+    // R2 is S3-compatible; UNSIGNED-PAYLOAD avoids hashing the (empty) body.
+    const payloadHash = 'UNSIGNED-PAYLOAD';
+
+    final canonicalHeaders = 'host:$_xtreamityHost\n'
+        'x-amz-content-sha256:$payloadHash\n'
+        'x-amz-date:$amzDate\n';
+    const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
+    final canonicalRequest =
+        'GET\n$path\n\n$canonicalHeaders\n$signedHeaders\n$payloadHash';
+
+    final scope = '$dateStamp/$region/$service/aws4_request';
+    final stringToSign = 'AWS4-HMAC-SHA256\n$amzDate\n$scope\n'
+        '${_sha256Hex(utf8.encode(canonicalRequest))}';
+
+    final kDate =
+        _hmac(utf8.encode('AWS4$_xtreamitySecretKey'), utf8.encode(dateStamp));
+    final kRegion = _hmac(kDate, utf8.encode(region));
+    final kService = _hmac(kRegion, utf8.encode(service));
+    final kSigning = _hmac(kService, utf8.encode('aws4_request'));
+    final signature = _hex(_hmac(kSigning, utf8.encode(stringToSign)));
+
+    final auth = 'AWS4-HMAC-SHA256 '
+        'Credential=$_xtreamityAccessKey/$scope, '
+        'SignedHeaders=$signedHeaders, '
+        'Signature=$signature';
+
+    final resp = await http.get(Uri.https(_xtreamityHost, path), headers: {
+      'Authorization': auth,
+      'x-amz-content-sha256': payloadHash,
+      'x-amz-date': amzDate,
+      'User-Agent': 'aws-sdk-android/2.x dart',
+    }).timeout(const Duration(seconds: 30));
+    if (resp.statusCode == 200) return resp.bodyBytes;
+    final preview = resp.body.isEmpty
+        ? ''
+        : resp.body.substring(0, math.min(200, resp.body.length));
+    debugPrint('[Xtreamity] R2 GET HTTP ${resp.statusCode}: $preview');
+    return null;
+  }
+
+  static String _amzDate(DateTime utc) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${utc.year}${two(utc.month)}${two(utc.day)}T'
+        '${two(utc.hour)}${two(utc.minute)}${two(utc.second)}Z';
+  }
+
+  static List<int> _hmac(List<int> key, List<int> data) =>
+      crypto.Hmac(crypto.sha256, key).convert(data).bytes;
+
+  static String _hex(List<int> bytes) =>
+      bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+  static String _sha256Hex(List<int> bytes) =>
+      _hex(crypto.sha256.convert(bytes).bytes);
+
+  static Future<ScrapePage> _scrapeXtreamityPage(
+      int offset, int maxResults, List<IptvPortal> portals) async {
+    final end = math.min(offset + maxResults, portals.length);
+    final slice = portals.sublist(offset, end);
+    final next = end < portals.length ? 'xtreamity:$end' : null;
+    debugPrint(
+        '[Xtreamity] page offset=$offset (${slice.length} portals, next=$next)');
+    return ScrapePage(portals: slice, nextAfter: next);
+  }
+
+  // ── GitHub XML2 dump source — curated portal lists, fetched FIRST. ──
+  // Pulled from https://github.com/akeotaseo/world_repo/tree/main/Updater_Matrix/XML2
+  // Each file is a plain-text dump of `http://host:port/get.php?username=…&password=…`
+  // URLs which `_extractPortals` already understands. We list the directory
+  // dynamically (so newly added files are picked up automatically) and fall
+  // back to the snapshot below if GitHub's API is unreachable / rate-limited.
+  static const _xml2Base =
+      'https://raw.githubusercontent.com/akeotaseo/world_repo/main/Updater_Matrix/XML2/';
+  static const _xml2ListApi =
+      'https://api.github.com/repos/akeotaseo/world_repo/contents/Updater_Matrix/XML2?ref=main';
+  // Snapshot fallback if the GitHub API call fails. Path-encoded for raw fetch.
+  static const _xml2FallbackFiles = <String>[
+    '25.txt',
+    '71.txt',
+    'ABN.txt',
+    'DOV.txt',
+    '%5BK_B_W_%20Client%5D.txt',
+    'br.txt',
+    'channels_fulltime%20(OR).txt',
+    'channels_fulltime.txt',
+    'kgen%20(4).txt',
+    'kgen.txt',
+    'rg.txt',
+    'x.txt',
+    '%7BAllTelegram%7D2.txt',
+  ];
+
+  // Cached file list (paths are URI-component-encoded ready for raw fetch).
+  // Populated on first call, valid for [_xml2ListTtl].
+  static List<String>? _xml2Files;
+  static DateTime? _xml2FilesFetchedAt;
+  static const _xml2ListTtl = Duration(hours: 6);
+
+  static Future<List<String>> _getXml2Files() async {
+    final cached = _xml2Files;
+    final fetchedAt = _xml2FilesFetchedAt;
+    if (cached != null &&
+        fetchedAt != null &&
+        DateTime.now().difference(fetchedAt) < _xml2ListTtl) {
+      return cached;
+    }
+    try {
+      final resp = await http.get(Uri.parse(_xml2ListApi), headers: {
+        'User-Agent': _ua,
+        'Accept': 'application/vnd.github+json',
+      }).timeout(const Duration(seconds: 12));
+      if (resp.statusCode == 200) {
+        final decoded = json.decode(resp.body);
+        if (decoded is List) {
+          // Collect (encoded-name, size) pairs so we can sort ascending —
+          // smaller files = fewer portals = faster first results for the user.
+          final entries = <MapEntry<String, int>>[];
+          for (final entry in decoded) {
+            if (entry is! Map) continue;
+            if (entry['type'] != 'file') continue;
+            final name = entry['name']?.toString();
+            if (name == null || !name.toLowerCase().endsWith('.txt')) continue;
+            final size =
+                int.tryParse('${entry['size'] ?? ''}') ?? 1 << 30; // unknown → last
+            // Path-encode each segment so spaces/brackets survive the raw URL.
+            entries.add(MapEntry(Uri.encodeComponent(name), size));
+          }
+          if (entries.isNotEmpty) {
+            entries.sort((a, b) => a.value.compareTo(b.value));
+            final files = entries.map((e) => e.key).toList(growable: false);
+            _xml2Files = files;
+            _xml2FilesFetchedAt = DateTime.now();
+            debugPrint(
+                '[XML2] listed ${files.length} files from GitHub (sorted by size, smallest first)');
+            return files;
+          }
+        }
+      } else {
+        debugPrint('[XML2] list HTTP ${resp.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('[XML2] list failed: $e');
+    }
+    // Fall back to snapshot — still cache so we don't hammer GitHub.
+    _xml2Files = _xml2FallbackFiles;
+    _xml2FilesFetchedAt = DateTime.now();
+    debugPrint('[XML2] using fallback list (${_xml2FallbackFiles.length} files)');
+    return _xml2FallbackFiles;
+  }
+
+  /// Cursor encoding for [scrapeCatalogPage]:
+  ///   `null`                 → first page → start with selected source
+  ///   `'xtreamity:<offset>'` → next chunk of the R2 portal database
+  ///   `'xml2:N'`             → fetch XML2 file at index N
+  ///   `'reddit:'`            → start of reddit catalog
+  ///   `'reddit:<token>'`     → reddit page with `after=<token>`
+  ///
+  /// [source] restricts scraping to a single backend; the scraper never
+  /// falls through to a different source. Source names are intentionally
+  /// opaque externally — see [CatalogSource] doc.
+  static Future<ScrapePage> scrapeCatalogPage({
+    int maxResults = 50,
+    String? after,
+    CatalogSource source = CatalogSource.best,
+  }) async {
+    switch (source) {
+      case CatalogSource.best:
+        // Xtreamity R2 database (pre-validated, highest signal).
+        final portals = await _getXtreamityPortals();
+        final offset = after == null
+            ? 0
+            : int.tryParse(after.substring('xtreamity:'.length)) ?? 0;
+        if (portals.isNotEmpty && offset < portals.length) {
+          return _scrapeXtreamityPage(offset, maxResults, portals);
+        }
+        return const ScrapePage(portals: [], nextAfter: null);
+
+      case CatalogSource.fastest:
+        // XML2 GitHub dumps (fast plain-text fetches).
+        final files = await _getXml2Files();
+        final idx = after == null
+            ? 0
+            : int.tryParse(after.substring('xml2:'.length)) ?? 0;
+        if (idx < files.length) {
+          return _scrapeXml2File(idx, files);
+        }
+        return const ScrapePage(portals: [], nextAfter: null);
+
+      case CatalogSource.works:
+        // Reddit catalog (volatile but fresh).
+        String? redditAfter;
+        if (after != null && after.startsWith('reddit:')) {
+          final t = after.substring(7);
+          redditAfter = t.isEmpty ? null : t;
+        } else if (after != null && after.isNotEmpty) {
+          redditAfter = after;
+        }
+        return _scrapeRedditCatalog(
+            maxResults: maxResults, after: redditAfter);
+    }
+  }
+
+  static Future<ScrapePage> _scrapeXml2File(
+      int idx, List<String> files) async {
+    final encoded = files[idx];
+    final url = '$_xml2Base$encoded';
+    final pretty = Uri.decodeComponent(encoded).replaceAll('.txt', '');
+    debugPrint('[XML2] [$idx/${files.length}] fetching $pretty');
+
+    String? body;
+    try {
+      final resp = await http.get(Uri.parse(url), headers: {
+        'User-Agent': _ua,
+        'Accept': 'text/plain,*/*',
+      }).timeout(const Duration(seconds: 25));
+      if (resp.statusCode == 200) {
+        body = resp.body;
+      } else {
+        debugPrint('[XML2]   HTTP ${resp.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('[XML2]   fetch failed: $e');
+    }
+
+    final next = idx + 1 < files.length ? 'xml2:${idx + 1}' : null;
+    if (body == null || body.isEmpty) {
+      return ScrapePage(portals: const [], nextAfter: next);
+    }
+
+    final extracted = _extractPortals(body, 'XML2/$pretty');
+    debugPrint('[XML2]   $pretty → ${extracted.length} portals');
+    return ScrapePage(portals: extracted, nextAfter: next);
+  }
+
+  static Future<ScrapePage> _scrapeRedditCatalog(
       {int maxResults = 50, String? after}) async {
     final out = <String, IptvPortal>{};
     final catalogJson = await _fetchCatalogJson(after: after);
@@ -611,11 +932,15 @@ class IptvScraper {
     final posts = data['children'] as List?;
     if (posts == null) return const ScrapePage(portals: [], nextAfter: null);
     final nextAfterRaw = data['after']?.toString();
-    final nextAfter =
+    final nextAfterToken =
         (nextAfterRaw == null || nextAfterRaw.isEmpty || nextAfterRaw == 'null')
             ? null
             : nextAfterRaw;
-    debugPrint('[Catalog] ${posts.length} posts (after=$after, next=$nextAfter)');
+    // Re-encode reddit cursor so the controller's opaque pagination keeps
+    // working across phases.
+    final nextAfter =
+        nextAfterToken == null ? null : 'reddit:$nextAfterToken';
+    debugPrint('[Catalog] ${posts.length} posts (after=$after, next=$nextAfterToken)');
 
     var postIdx = 0;
     for (final post in posts) {

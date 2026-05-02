@@ -101,6 +101,7 @@ class _ComicsScreenState extends State<ComicsScreen> {
       _isShowingLiked = false;
     });
     final comics = await _comicsService.getComics(page: _currentPage);
+    if (!mounted) return;
     setState(() {
       _comics = comics;
       _isLoading = false;

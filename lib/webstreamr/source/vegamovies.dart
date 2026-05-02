@@ -29,7 +29,7 @@ class VegaMoviesSource extends Source {
   @override
   String get label => 'VegaMovies';
   @override
-  List<String> get contentTypes => const ['movie'];
+  List<String> get contentTypes => const ['movie', 'series'];
   @override
   List<CountryCode> get countryCodes => const [
         CountryCode.multi,
@@ -43,14 +43,34 @@ class VegaMoviesSource extends Source {
   Future<List<SourceResult>> handleInternal(
       Context ctx, String type, Id id) async {
     final imdbId = await getImdbId(ctx, fetcher, id);
-    // Movies only — skip if this is an episode lookup.
-    if (imdbId.episode != null) return const [];
     final pageUrls = await _searchByImdb(ctx, imdbId);
     if (pageUrls.isEmpty) return const [];
 
     final lists = await Future.wait(
         pageUrls.map((u) => _handlePage(ctx, u, imdbId)));
     return lists.expand((e) => e).toList();
+  }
+
+  /// True if [text] references the requested [season]. Matches
+  /// `Season N`, `Season NN`, `S0N`, and ranges like `Seasons 1 - 10`.
+  static bool _seasonMatches(String text, int season) {
+    final s = season.toString();
+    if (RegExp(r'\bSeason\s*0*' + s + r'\b', caseSensitive: false)
+        .hasMatch(text)) {
+      return true;
+    }
+    if (RegExp(r'\bS0?' + s + r'\b', caseSensitive: false).hasMatch(text)) {
+      return true;
+    }
+    final rangeRe =
+        RegExp(r'Seasons?\s+(\d{1,2})\s*[-\u2013\u2014]\s*(\d{1,2})',
+            caseSensitive: false);
+    for (final m in rangeRe.allMatches(text)) {
+      final a = int.parse(m.group(1)!);
+      final b = int.parse(m.group(2)!);
+      if (season >= a && season <= b) return true;
+    }
+    return false;
   }
 
   Future<List<Uri>> _searchByImdb(Context ctx, ImdbId imdbId) async {
@@ -70,13 +90,7 @@ class VegaMoviesSource extends Source {
       if (lower.contains('trailer') || lower.contains('coming soon')) continue;
 
       if (imdbId.season != null) {
-        final s = imdbId.season.toString();
-        final sPad = s.padLeft(2, '0');
-        if (!postTitle.contains('Season $s') &&
-            !postTitle.contains('S$s') &&
-            !postTitle.contains('S$sPad')) {
-          continue;
-        }
+        if (!_seasonMatches(postTitle, imdbId.season!)) continue;
       } else {
         // For movies, drop posts that look like series.
         if (postTitle.contains('Season ') || RegExp(r'\bS\d{1,2}\b').hasMatch(postTitle)) {
@@ -110,33 +124,35 @@ class VegaMoviesSource extends Source {
     // Collect (nexdrive_url, quality_label) pairs to resolve.
     final targets = <_NexTarget>[];
 
-    if (imdbId.episode == null) {
-      // Movie OR season pack: take every nexdrive link with its preceding header.
-      _collectNexdriveTargets(doc.body, targets);
+    if (imdbId.episode == null && imdbId.season == null) {
+      // Movie: take every nexdrive link with its preceding header.
+      _collectNexdriveTargets(doc.body, targets, null);
     } else {
-      final epStr = '${imdbId.episode}';
-      final epPad = epStr.padLeft(2, '0');
-      // Try episode-specific sections first (look for headers containing
-      // "Episode N" / "EPISODE N" and gather following anchors until <hr> or
-      // next header).
-      _collectEpisodeTargets(doc.body, epStr, epPad, targets);
-      // If nothing found, fall back to season-pack links.
-      if (targets.isEmpty) {
-        _collectNexdriveTargets(doc.body, targets);
+      // Series. First try episode-specific anchors on the post page itself
+      // (rare — most posts only group by season).
+      if (imdbId.episode != null) {
+        final epStr = '${imdbId.episode}';
+        final epPad = epStr.padLeft(2, '0');
+        _collectEpisodeTargets(doc.body, epStr, epPad, targets);
       }
+      // Then collect every nexdrive link whose nearest preceding header
+      // mentions the requested season. Episode filtering happens inside
+      // _resolveNexdrive (the nexdrive page lists per-episode links).
+      _collectNexdriveTargets(doc.body, targets, imdbId.season);
     }
 
-    final lists = await Future.wait(targets.map(
-        (t) => _resolveNexdrive(ctx, t.url, t.label, pageUrl, meta)));
+    final lists = await Future.wait(targets.map((t) => _resolveNexdrive(
+        ctx, t.url, t.label, pageUrl, meta, imdbId.episode)));
     return lists.expand((e) => e).toList();
   }
 
   void _collectNexdriveTargets(
-      dynamic root, List<_NexTarget> out) {
+      dynamic root, List<_NexTarget> out, int? season) {
     if (root == null) return;
+    final seen = out.map((t) => t.url.toString()).toSet();
     for (final a in root.querySelectorAll('a[href*="nexdrive."]')) {
       final href = a.attributes['href'];
-      if (href == null) continue;
+      if (href == null || !seen.add(href)) continue;
       // Try to find the nearest preceding header for a quality label.
       String label = '';
       var p = a.parent;
@@ -152,6 +168,17 @@ class VegaMoviesSource extends Source {
         }
         if (label.isNotEmpty) break;
         p = p.parent;
+      }
+      // For series, restrict to nexdrive links whose preceding header
+      // references the requested season.
+      if (season != null && !_seasonMatches(label, season)) continue;
+      // When fetching a single episode skip explicit batch / zip packs.
+      final anchorText = a.text.toString().toLowerCase();
+      if (season != null &&
+          (anchorText.contains('batch') ||
+              anchorText.contains('zip') ||
+              anchorText.contains('complete'))) {
+        continue;
       }
       out.add(_NexTarget(Uri.parse(href), label));
     }
@@ -186,17 +213,24 @@ class VegaMoviesSource extends Source {
     }
   }
 
-  Future<List<SourceResult>> _resolveNexdrive(
-      Context ctx, Uri nexUrl, String label, Uri refererUrl, Meta meta) async {
+  Future<List<SourceResult>> _resolveNexdrive(Context ctx, Uri nexUrl,
+      String label, Uri refererUrl, Meta meta, int? episode) async {
     try {
       final html = await fetcher.text(ctx, nexUrl,
           FetcherRequestConfig(headers: {'Referer': refererUrl.toString()}));
+      // If targeting a specific episode, narrow the HTML window to the
+      // matching `-:Episode(s): N:-` section before pulling vcloud links.
+      String scope = html;
+      if (episode != null) {
+        scope = _episodeSlice(html, episode) ?? '';
+        if (scope.isEmpty) return const [];
+      }
       // Pull all vcloud.zip mirrors. Prefer those — they map to the HubCloud
       // engine. fastdl/filebee are skipped (no standalone extractors yet).
       final out = <SourceResult>[];
       final seen = <String>{};
       for (final m
-          in RegExp(r'href="(https?://[^"]*vcloud[^"]+)"').allMatches(html)) {
+          in RegExp(r'href="(https?://[^"]*vcloud[^"]+)"').allMatches(scope)) {
         final href = m.group(1)!;
         if (!seen.add(href)) continue;
         final m2 = meta.clone();
@@ -211,6 +245,26 @@ class VegaMoviesSource extends Source {
     } catch (_) {
       return const [];
     }
+  }
+
+  /// Extract the HTML between the `-:Episode(s): N:-` header for [episode]
+  /// and the next episode header (or end-of-document). Returns null when no
+  /// such section exists.
+  static String? _episodeSlice(String html, int episode) {
+    // Match "Episode" or "Episodes" followed by the number (with or without
+    // a leading zero) framed by colons / dashes.
+    final headerRe = RegExp(
+        r'(?:-\s*:|:)\s*Episodes?\s*:?\s*0*(\d{1,3})\s*:?\s*-?',
+        caseSensitive: false);
+    final matches = headerRe.allMatches(html).toList();
+    for (var i = 0; i < matches.length; i++) {
+      final n = int.tryParse(matches[i].group(1) ?? '');
+      if (n != episode) continue;
+      final start = matches[i].end;
+      final end = i + 1 < matches.length ? matches[i + 1].start : html.length;
+      return html.substring(start, end);
+    }
+    return null;
   }
 }
 

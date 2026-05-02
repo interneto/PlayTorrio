@@ -320,46 +320,55 @@ class _MusicPlayerScreenState extends State<MusicPlayerScreen> with WidgetsBindi
   // ─────────────────────────────────────────────
 
   Widget _buildArtView(MusicTrack track, double availableWidth, [double? availableHeight]) {
-    // Reserve ~120px for title/artist/album text + spacing
-    final maxArtFromHeight = (availableHeight != null) ? (availableHeight - 120).clamp(100.0, 360.0) : 360.0;
+    // Reserve enough vertical room for title (up to 2 lines) + artist + album
+    // + spacing. Empirically: 24*1.2*2 + 8 + 16 + 4 + 13 + 24 ≈ 123, plus a
+    // safety margin so an unusually tall font doesn't overflow.
+    const textBlockReserve = 160.0;
+    final maxArtFromHeight = (availableHeight != null)
+        ? (availableHeight - textBlockReserve).clamp(100.0, 360.0)
+        : 360.0;
     final artSize = (availableWidth * 0.82).clamp(180.0, maxArtFromHeight);
 
     return Column(
       key: const ValueKey('art'),
       mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        // Album art with animated glow
-        AnimatedBuilder(
-          animation: _glowController,
-          builder: (context, child) {
-            return Container(
-              decoration: BoxDecoration(
+        // Album art with animated glow — flexible so it gives up pixels first
+        // if the text block ends up taller than reserved (e.g. very long titles).
+        Flexible(
+          child: AnimatedBuilder(
+            animation: _glowController,
+            builder: (context, child) {
+              return Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(28),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppTheme.primaryColor.withValues(alpha: 0.15 + (_glowController.value * 0.15)),
+                      blurRadius: 40 + (_glowController.value * 20),
+                      spreadRadius: 5 + (_glowController.value * 10),
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.5),
+                      blurRadius: 30,
+                      offset: const Offset(0, 15),
+                    ),
+                  ],
+                ),
+                child: child,
+              );
+            },
+            child: Hero(
+              tag: 'track-art',
+              child: ClipRRect(
                 borderRadius: BorderRadius.circular(28),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppTheme.primaryColor.withValues(alpha: 0.15 + (_glowController.value * 0.15)),
-                    blurRadius: 40 + (_glowController.value * 20),
-                    spreadRadius: 5 + (_glowController.value * 10),
-                  ),
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.5),
-                    blurRadius: 30,
-                    offset: const Offset(0, 15),
-                  ),
-                ],
+                child: _buildCoverImage(track.cover, width: artSize, height: artSize),
               ),
-              child: child,
-            );
-          },
-          child: Hero(
-            tag: 'track-art',
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(28),
-              child: _buildCoverImage(track.cover, width: artSize, height: artSize),
             ),
           ),
         ),
-        const SizedBox(height: 36),
+        const SizedBox(height: 24),
         // Track info
         Text(
           track.title,

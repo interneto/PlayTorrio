@@ -116,6 +116,7 @@ class _MangaScreenState extends State<MangaScreen> with WidgetsBindingObserver {
       _isSearching = false;
     });
     final manga = await _mangaService.getManga(page: _currentPage, tag: _selectedGenre, allowAdult: _allowAdult);
+    if (!mounted) return;
     setState(() {
       _manga = manga;
       _isLoading = false;
@@ -754,7 +755,6 @@ class _MangaCard extends StatefulWidget {
 
 class _MangaCardState extends State<_MangaCard> {
   final MangaService _mangaService = MangaService();
-  bool _isHovered = false;
 
   Future<void> _toggleLike() async {
     await _mangaService.toggleLike(widget.manga);
@@ -763,114 +763,100 @@ class _MangaCardState extends State<_MangaCard> {
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      child: GestureDetector(
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => MangaDetailsScreen(manga: widget.manga),
-            ),
-          ).then((_) {
-            if (!mounted) return;
-            widget.onLikeChanged();
-          });
-          
-          // Reload history when screen becomes visible again
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              final mangaScreenState = context.findAncestorStateOfType<_MangaScreenState>();
-              if (mangaScreenState != null) {
-                mangaScreenState._loadHistory();
-              }
-            }
-          });
-        },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          transform: Matrix4.diagonal3Values(_isHovered ? 1.05 : 1.0, _isHovered ? 1.05 : 1.0, 1.0),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: _isHovered ? 0.1 : 0.05),
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: _isHovered
-                ? [
-                    BoxShadow(
-                      color: AppTheme.primaryColor.withValues(alpha: 0.3),
-                      blurRadius: 20,
-                      spreadRadius: 2,
-                    ),
-                  ]
-                : [],
+    return FocusableControl(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => MangaDetailsScreen(manga: widget.manga),
           ),
-          clipBehavior: Clip.antiAlias,
-          child: Stack(
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: CachedNetworkImage(
-                      imageUrl: widget.manga.coverNormal,
-                      fit: BoxFit.cover,
-                      width: double.infinity,
-                      placeholder: (context, url) => Container(color: Colors.white10),
-                      errorWidget: (context, url, error) => Container(
-                        color: Colors.white10,
-                        child: const Center(child: Icon(Icons.broken_image, color: Colors.white24)),
-                      ),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.all(12.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.manga.title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          widget.manga.type.toUpperCase(),
-                          style: const TextStyle(
-                            color: AppTheme.primaryColor,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              Positioned(
-                top: 8,
-                right: 8,
-                child: GestureDetector(
-                  onTap: _toggleLike,
-                  child: Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: const BoxDecoration(
-                      color: Colors.black45,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      widget.isLiked ? Icons.favorite : Icons.favorite_border,
-                      color: widget.isLiked ? Colors.redAccent : Colors.white70,
-                      size: 18,
+        ).then((_) {
+          if (!mounted) return;
+          widget.onLikeChanged();
+        });
+
+        // Reload history when screen becomes visible again
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            final mangaScreenState =
+                context.findAncestorStateOfType<_MangaScreenState>();
+            if (mangaScreenState != null) {
+              mangaScreenState._loadHistory();
+            }
+          }
+        });
+      },
+      borderRadius: 16,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: CachedNetworkImage(
+                    imageUrl: widget.manga.coverNormal,
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    placeholder: (context, url) => Container(color: Colors.white10),
+                    errorWidget: (context, url, error) => Container(
+                      color: Colors.white10,
+                      child: const Center(child: Icon(Icons.broken_image, color: Colors.white24)),
                     ),
                   ),
                 ),
+                Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.manga.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        widget.manga.type.toUpperCase(),
+                        style: const TextStyle(
+                          color: AppTheme.primaryColor,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: GestureDetector(
+                onTap: _toggleLike,
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: const BoxDecoration(
+                    color: Colors.black45,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    widget.isLiked ? Icons.favorite : Icons.favorite_border,
+                    color: widget.isLiked ? Colors.redAccent : Colors.white70,
+                    size: 18,
+                  ),
+                ),
               ),
+            ),
             ],
           ),
         ),
-      ),
     );
   }
 }

@@ -5,10 +5,13 @@ import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
+import '../../utils/language_display.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:screen_brightness/screen_brightness.dart';
@@ -487,6 +490,9 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
   bool _isInitPlaybackRunning = false;
   bool _isFetchingSubs = false;
   String? _selectedExternalSubUrl;
+  /// Currently opened language-folder key in the subtitle picker, or null
+  /// when the picker shows the folder list. Persists across menu open/close.
+  String? _subsMenuFolder;
 
   // ── Feature State ─────────────────────────────────────────────────────────
   _HwDecMode _hwDecMode = _HwDecMode.autoSafe;
@@ -1247,14 +1253,34 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
     await mpv.setProperty('network-timeout', '30');
     await mpv.setProperty('tls-verify', 'no');
 
-    // 150 MiB forward cache (less than desktop's 300 MiB — spare mobile RAM).
-    await mpv.setProperty('cache', 'yes');
-    await mpv.setProperty('cache-secs', '120');
-    await mpv.setProperty('demuxer-max-bytes', '150MiB');
-    await mpv.setProperty('demuxer-readahead-secs', '120');
+    final isTorrent = widget.magnetLink != null;
+    if (isTorrent) {
+      // Torrent engine feeds bytes from disk as pieces complete — a small
+      // forward window is enough and keeps memory pressure low. We also
+      // disable cache-pause so playback keeps moving when the demuxer
+      // briefly drains while waiting on the next piece.
+      await mpv.setProperty('cache', 'yes');
+      await mpv.setProperty('cache-secs', '5');
+      await mpv.setProperty('cache-pause-wait', '1');
+      await mpv.setProperty('cache-pause-initial', 'no');
+      await mpv.setProperty('cache-pause', 'no');
+      await mpv.setProperty('demuxer-readahead-secs', '2');
+      await mpv.setProperty('demuxer-max-bytes', '64MiB');
+      await mpv.setProperty('demuxer-max-back-bytes', '16MiB');
+      await mpv.setProperty('network-timeout', '15');
+      await mpv.setProperty('force-seekable', 'yes');
+      await mpv.setProperty('hr-seek', 'yes');
+      await mpv.setProperty('hr-seek-framedrop', 'no');
+    } else {
+      // 150 MiB forward cache (less than desktop's 300 MiB — spare mobile RAM).
+      await mpv.setProperty('cache', 'yes');
+      await mpv.setProperty('cache-secs', '120');
+      await mpv.setProperty('demuxer-max-bytes', '150MiB');
+      await mpv.setProperty('demuxer-readahead-secs', '120');
 
-    // 30 MiB back-buffer so backward seeks don't require a full rebuffer.
-    await mpv.setProperty('demuxer-max-back-bytes', '30MiB');
+      // 30 MiB back-buffer so backward seeks don't require a full rebuffer.
+      await mpv.setProperty('demuxer-max-back-bytes', '30MiB');
+    }
 
     // We supply our own URL — no yt-dlp needed.
     await mpv.setProperty('ytdl', 'no');
@@ -1445,6 +1471,50 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
   //  SUBTITLES
   // ─────────────────────────────────────────────────────────────────────────
 
+  // ─────────────────────────────────────────────────────────────────────────
+  //  ONLINE SUBTITLE LOADER (download → temp file → SubtitleTrack.uri)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _loadOnlineSubtitle(Map<String, dynamic> s) async {
+    final url = (s['url'] ?? '').toString();
+    if (url.isEmpty) return;
+    final isTranslated = s['translated'] == true ||
+        url.contains('/subtitlecat-translate');
+
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final res = await http
+          .get(Uri.parse(url))
+          .timeout(Duration(minutes: isTranslated ? 5 : 1));
+      if (!mounted) return;
+      if (res.statusCode != 200) {
+        messenger.showSnackBar(SnackBar(
+            content: Text('Subtitle failed (${res.statusCode})')));
+        return;
+      }
+      final dir = await getTemporaryDirectory();
+      final safeLang = (s['language'] ?? 'sub')
+          .toString()
+          .replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+      final file = File(
+          '${dir.path}/playtorrio_sub_${DateTime.now().millisecondsSinceEpoch}_$safeLang.srt');
+      await file.writeAsBytes(res.bodyBytes);
+      final uri = Uri.file(file.path).toString();
+      _player.setSubtitleTrack(SubtitleTrack.uri(
+        uri,
+        title: s['display'],
+        language: s['language'],
+      ));
+      if (mounted) {
+        setState(() => _selectedExternalSubUrl = url);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+          SnackBar(content: Text('Subtitle failed: $e')));
+    }
+  }
+
   Future<void> _fetchSubtitles() async {
     // Pre-populate with Jellyfin subtitles if provided
     final jellyfinSubs = widget.externalSubtitles ?? [];
@@ -1460,6 +1530,10 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
       imdbId: widget.movie!.imdbId,
       season: widget.selectedSeason,
       episode: widget.selectedEpisode,
+      title: widget.movie!.title,
+      year: widget.movie!.releaseDate.length >= 4
+          ? int.tryParse(widget.movie!.releaseDate.substring(0, 4))
+          : null,
     );
 
     stream.listen(
@@ -1481,7 +1555,9 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
       builder: (context) {
         return StatefulBuilder(builder: (context, setModalState) {
           final current = _player.state.track.subtitle;
+          final inFolder = _subsMenuFolder != null;
 
+          // Embedded tracks (only at root view).
           final embedded =
               _player.state.tracks.subtitle.where((t) {
             final isExternal = t.id.startsWith('http');
@@ -1495,13 +1571,39 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
             return t.id != 'no' && !isExternal && !isKnownExternal && matchesSearch;
           }).toList();
 
-          final online = _externalSubtitles.where((s) {
-            final display = s['display'] ?? 'Unknown';
-            final lang = s['language'] ?? '';
-            return searchQuery.isEmpty ||
-                display.toLowerCase().contains(searchQuery.toLowerCase()) ||
-                lang.toLowerCase().contains(searchQuery.toLowerCase());
-          }).toList();
+          // Group online subs by language.
+          final Map<String, List<Map<String, dynamic>>> byLang = {};
+          for (final s in _externalSubtitles) {
+            final key = languageGroupKey(s['language'] as String?);
+            byLang.putIfAbsent(key, () => []).add(s);
+          }
+          final folderKeys = byLang.keys.toList()..sort(compareLanguageCodes);
+
+          List<Map<String, dynamic>> online;
+          if (inFolder) {
+            online = (byLang[_subsMenuFolder!] ?? []).where((s) {
+              if (searchQuery.isEmpty) return true;
+              final q = searchQuery.toLowerCase();
+              return (s['display'] ?? '')
+                      .toString()
+                      .toLowerCase()
+                      .contains(q) ||
+                  (s['language'] ?? '')
+                      .toString()
+                      .toLowerCase()
+                      .contains(q);
+            }).toList();
+          } else {
+            online = const [];
+          }
+
+          final visibleFolders = !inFolder && searchQuery.isNotEmpty
+              ? folderKeys.where((k) {
+                  final q = searchQuery.toLowerCase();
+                  return languageDisplayName(k).toLowerCase().contains(q) ||
+                      k.contains(q);
+                }).toList()
+              : folderKeys;
 
           return SafeArea(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1513,13 +1615,31 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
                     borderRadius: BorderRadius.circular(2)),
               ),
               Padding(
-                padding: const EdgeInsets.only(bottom: 10, left: 16, right: 4),
+                padding: const EdgeInsets.only(bottom: 10, left: 4, right: 4),
                 child: Row(
                   children: [
-                    const Expanded(
-                      child: Text('Subtitles',
+                    if (inFolder)
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back_rounded,
+                            color: Colors.white),
+                        tooltip: 'Back to languages',
+                        onPressed: () {
+                          setModalState(() {
+                            searchQuery = '';
+                            _subsMenuFolder = null;
+                          });
+                          setState(() {});
+                        },
+                      )
+                    else
+                      const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(
+                          inFolder
+                              ? languageDisplayName(_subsMenuFolder)
+                              : 'Subtitles',
                           textAlign: TextAlign.center,
-                          style: TextStyle(
+                          style: const TextStyle(
                               color: Colors.white,
                               fontSize: 16,
                               fontWeight: FontWeight.bold)),
@@ -1555,7 +1675,9 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
                 child: TextField(
                   style: const TextStyle(color: Colors.white),
                   decoration: InputDecoration(
-                    hintText: 'Search subtitles...',
+                    hintText: inFolder
+                        ? 'Search in ${languageDisplayName(_subsMenuFolder)}...'
+                        : 'Search subtitles...',
                     hintStyle: const TextStyle(color: Colors.white54),
                     prefixIcon:
                         const Icon(Icons.search, color: Colors.white54),
@@ -1579,123 +1701,176 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
                 ),
               Expanded(
                 child: ListView(children: [
-                  ListTile(
-                    leading:
-                        const Icon(Icons.close, color: Colors.white70),
-                    title: const Text('Off',
-                        style: TextStyle(color: Colors.white)),
-                    trailing: current.id == 'no'
-                        ? const Icon(Icons.check, color: Color(0xFF7C3AED))
-                        : null,
-                    onTap: () {
-                      _selectedExternalSubUrl = null;
-                      _player.setSubtitleTrack(SubtitleTrack.no());
-                      Navigator.pop(context);
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.file_upload_outlined, color: Colors.white70),
-                    title: const Text('Load from file', style: TextStyle(color: Colors.white)),
-                    onTap: () async {
-                      final result = await FilePicker.platform.pickFiles(
-                        type: FileType.custom,
-                        allowedExtensions: ['srt', 'ass', 'ssa', 'vtt'],
-                      );
-                      if (result != null && result.files.single.path != null) {
-                        final file = File(result.files.single.path!);
-                        final content = await file.readAsString();
-                        final name = result.files.single.name;
+                  if (!inFolder) ...[
+                    ListTile(
+                      leading:
+                          const Icon(Icons.close, color: Colors.white70),
+                      title: const Text('Off',
+                          style: TextStyle(color: Colors.white)),
+                      trailing: current.id == 'no'
+                          ? const Icon(Icons.check, color: Color(0xFF7C3AED))
+                          : null,
+                      onTap: () {
                         _selectedExternalSubUrl = null;
-                        _player.setSubtitleTrack(SubtitleTrack.data(
-                            content, title: name, language: 'und'));
-                        if (context.mounted) Navigator.pop(context);
-                      }
-                    },
-                  ),
-                  if (embedded.isNotEmpty) ...[
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-                      child: Text('EMBEDDED',
-                          style: TextStyle(
-                              color: Color(0xFF7C3AED),
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold)),
+                        _player.setSubtitleTrack(SubtitleTrack.no());
+                        Navigator.pop(context);
+                      },
                     ),
-                    ...embedded.map((t) {
-                      final sel = t.id == current.id &&
-                          _selectedExternalSubUrl == null;
-                      return ListTile(
-                        title: Text(
-                            t.title ?? t.language ?? 'Track ${t.id}',
-                            style: TextStyle(
-                                color: sel
-                                    ? const Color(0xFF7C3AED)
-                                    : Colors.white,
-                                fontWeight: sel
-                                    ? FontWeight.bold
-                                    : FontWeight.normal)),
-                        trailing: sel
-                            ? const Icon(Icons.check,
-                                color: Color(0xFF7C3AED))
-                            : null,
-                        onTap: () {
+                    ListTile(
+                      leading: const Icon(Icons.file_upload_outlined,
+                          color: Colors.white70),
+                      title: const Text('Load from file',
+                          style: TextStyle(color: Colors.white)),
+                      onTap: () async {
+                        final result = await FilePicker.platform.pickFiles(
+                          type: FileType.custom,
+                          allowedExtensions: ['srt', 'ass', 'ssa', 'vtt'],
+                        );
+                        if (result != null &&
+                            result.files.single.path != null) {
+                          final file = File(result.files.single.path!);
+                          final content = await file.readAsString();
+                          final name = result.files.single.name;
                           _selectedExternalSubUrl = null;
-                          _player.setSubtitleTrack(t);
-                          Navigator.pop(context);
-                        },
-                      );
-                    }),
-                  ],
-                  if (online.isNotEmpty) ...[
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-                      child: Text('ONLINE',
-                          style: TextStyle(
-                              color: Color(0xFF7C3AED),
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold)),
+                          _player.setSubtitleTrack(SubtitleTrack.data(
+                              content, title: name, language: 'und'));
+                          if (context.mounted) Navigator.pop(context);
+                        }
+                      },
                     ),
-                    ...online.map((s) {
-                      final sel = s['url'] == _selectedExternalSubUrl;
-                      return ListTile(
-                        title: Text(s['display'] ?? 'Unknown',
+                    if (embedded.isNotEmpty) ...[
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                        child: Text('EMBEDDED',
                             style: TextStyle(
-                                color: sel
-                                    ? const Color(0xFF7C3AED)
-                                    : Colors.white,
-                                fontWeight: sel
-                                    ? FontWeight.bold
-                                    : FontWeight.normal)),
-                        subtitle: Text(s['language'] ?? '',
+                                color: Color(0xFF7C3AED),
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold)),
+                      ),
+                      ...embedded.map((t) {
+                        final sel = t.id == current.id &&
+                            _selectedExternalSubUrl == null;
+                        return ListTile(
+                          title: Text(
+                              t.title ?? t.language ?? 'Track ${t.id}',
+                              style: TextStyle(
+                                  color: sel
+                                      ? const Color(0xFF7C3AED)
+                                      : Colors.white,
+                                  fontWeight: sel
+                                      ? FontWeight.bold
+                                      : FontWeight.normal)),
+                          trailing: sel
+                              ? const Icon(Icons.check,
+                                  color: Color(0xFF7C3AED))
+                              : null,
+                          onTap: () {
+                            _selectedExternalSubUrl = null;
+                            _player.setSubtitleTrack(t);
+                            Navigator.pop(context);
+                          },
+                        );
+                      }),
+                    ],
+                    if (visibleFolders.isNotEmpty) ...[
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                        child: Text('ONLINE LANGUAGES',
                             style: TextStyle(
-                                color: sel
-                                    ? const Color(0xFF7C3AED)
-                                        .withValues(alpha: 0.7)
-                                    : Colors.white54,
-                                fontSize: 12)),
-                        trailing: sel
-                            ? const Icon(Icons.check,
-                                color: Color(0xFF7C3AED))
-                            : null,
-                        onTap: () {
-                          _selectedExternalSubUrl = s['url'];
-                          _player.setSubtitleTrack(SubtitleTrack.uri(
-                              s['url'],
-                              title: s['display'],
-                              language: s['language']));
-                          Navigator.pop(context);
-                        },
-                      );
-                    }),
+                                color: Color(0xFF7C3AED),
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold)),
+                      ),
+                      ...visibleFolders.map((key) {
+                        final list = byLang[key]!;
+                        final hasSelected = list.any(
+                            (s) => s['url'] == _selectedExternalSubUrl);
+                        return ListTile(
+                          leading: Icon(
+                            hasSelected
+                                ? Icons.folder_rounded
+                                : Icons.folder_outlined,
+                            color: hasSelected
+                                ? const Color(0xFF7C3AED)
+                                : Colors.white70,
+                          ),
+                          title: Text(languageDisplayName(key),
+                              style: TextStyle(
+                                  color: hasSelected
+                                      ? const Color(0xFF7C3AED)
+                                      : Colors.white,
+                                  fontWeight: hasSelected
+                                      ? FontWeight.bold
+                                      : FontWeight.normal)),
+                          subtitle: Text(
+                              '${list.length} subtitle${list.length == 1 ? '' : 's'}',
+                              style: const TextStyle(
+                                  color: Colors.white54, fontSize: 12)),
+                          trailing: const Icon(
+                              Icons.chevron_right_rounded,
+                              color: Colors.white54),
+                          onTap: () {
+                            setModalState(() {
+                              searchQuery = '';
+                              _subsMenuFolder = key;
+                            });
+                            setState(() {});
+                          },
+                        );
+                      }),
+                    ],
+                    if (embedded.isEmpty && visibleFolders.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(32),
+                        child: Center(
+                            child: Text('No subtitles found',
+                                style:
+                                    TextStyle(color: Colors.white54))),
+                      ),
+                  ] else ...[
+                    if (online.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(32),
+                        child: Center(
+                            child: Text('No subtitles match',
+                                style:
+                                    TextStyle(color: Colors.white54))),
+                      )
+                    else
+                      ...online.map((s) {
+                        final sel = s['url'] == _selectedExternalSubUrl;
+                        return ListTile(
+                          title: Text(s['display'] ?? 'Unknown',
+                              style: TextStyle(
+                                  color: sel
+                                      ? const Color(0xFF7C3AED)
+                                      : Colors.white,
+                                  fontWeight: sel
+                                      ? FontWeight.bold
+                                      : FontWeight.normal)),
+                          subtitle: Text(
+                              (s['translated'] == true
+                                      ? 'Translated · '
+                                      : '') +
+                                  (s['sourceName']?.toString() ?? ''),
+                              style: TextStyle(
+                                  color: sel
+                                      ? const Color(0xFF7C3AED)
+                                          .withValues(alpha: 0.7)
+                                      : Colors.white54,
+                                  fontSize: 12)),
+                          trailing: sel
+                              ? const Icon(Icons.check,
+                                  color: Color(0xFF7C3AED))
+                              : null,
+                          onTap: () async {
+                            _selectedExternalSubUrl = s['url'];
+                            await _loadOnlineSubtitle(s);
+                            if (mounted) Navigator.pop(context);
+                          },
+                        );
+                      }),
                   ],
-                  if (embedded.isEmpty && online.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(32),
-                      child: Center(
-                          child: Text('No subtitles found',
-                              style:
-                                  TextStyle(color: Colors.white54))),
-                    ),
                 ]),
               ),
             ]),

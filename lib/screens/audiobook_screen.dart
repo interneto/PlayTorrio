@@ -69,6 +69,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> with WidgetsBindingOb
       _showLiked = false;
     });
     final books = await _service.getAudiobooks(offset: _currentOffset, limit: _limit);
+    if (!mounted) return;
     setState(() {
       _books = books;
       _isLoading = false;

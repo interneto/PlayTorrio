@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import '../data/hardcoded_channels.dart';
 import '../data/iptv_network.dart';
@@ -24,11 +25,40 @@ class IptvController extends ChangeNotifier {
   bool isScraping = false;
   String statusText = '';
   List<VerifiedPortal> verified = const [];
+
+  /// Which catalog backend Scrape / Get More pulls from. Defaults to the
+  /// pre-validated source ("Best"). Switching resets pagination so the
+  /// new source starts at its first page; previously-attempted dead
+  /// credentials are still skipped.
+  CatalogSource scrapeSource = CatalogSource.best;
+
+  void setScrapeSource(CatalogSource s) {
+    if (s == scrapeSource) return;
+    scrapeSource = s;
+    _scrapeAfter = null;
+    _pendingPortals.clear();
+    _pendingKeys.clear();
+    canGetMore = false;
+    statusText = '';
+    notifyListeners();
+  }
+
+  /// Subset of [verified] that the user added manually. The portal-list
+  /// screen only ever shows these; portals discovered automatically by
+  /// the channel scraper are kept internally for channel results but are
+  /// hidden from the user-facing portal list.
+  List<VerifiedPortal> get manualVerified =>
+      verified.where((v) => v.portal.source == 'Manual').toList();
   bool canGetMore = false;
   String? _scrapeAfter;
   /// Set of credKeys (user|pass) already verified — used to dedupe portals.
   /// Same credentials on a different URL still counts as a duplicate.
   final Set<String> _verifiedKeys = {};
+
+  /// Set of credKeys we've already attempted (alive OR dead) during this
+  /// session. Prevents re-testing portals that failed verification when the
+  /// user presses Scrape / Get More repeatedly.
+  final Set<String> _attemptedKeys = {};
 
   /// Untested portals scraped on previous Get-More presses.
   /// Consumed first before scraping a fresh page — never wasted.
@@ -209,7 +239,7 @@ class IptvController extends ChangeNotifier {
     statusText = 'Finding portals…';
     canGetMore = false;
     notifyListeners();
-    await _scrapeAndVerify(reset: true);
+    await _scrapeAndVerify();
   }
 
   Future<void> getMore() async {
@@ -217,87 +247,125 @@ class IptvController extends ChangeNotifier {
     isScraping = true;
     statusText = 'Searching for more…';
     notifyListeners();
-    await _scrapeAndVerify(reset: false);
+    await _scrapeAndVerify();
   }
 
-  Future<void> _scrapeAndVerify({required bool reset}) async {
+  Future<void> _scrapeAndVerify() async {
+    const targetAlive = 5;
+    // Hard safety cap so a totally dead source can't loop forever.
+    const maxPagesPerPress = 40;
+    final newAlive = <VerifiedPortal>[];
+    ScrapePage? page;
+    var pagesTried = 0;
+    var exhausted = false;
+
     try {
-      // ── Step 1: only fetch a fresh catalog page when our local pending
-      //         queue is empty (or caller forced a reset). This avoids
-      //         throwing away portals we already scraped on a previous press.
-      final shouldFetchPage = reset || _pendingPortals.isEmpty;
-      ScrapePage? page;
-      if (shouldFetchPage) {
-        if (reset) {
-          _scrapeAfter = null;
-          _pendingPortals.clear();
-          _pendingKeys.clear();
-        }
-        page = await IptvScraper.scrapeCatalogPage(
-          maxResults: 50,
-          after: _scrapeAfter,
-        );
-        _scrapeAfter = page.nextAfter;
-        // Add only portals we haven't already verified or queued.
-        // Dedup is by credentials (user|pass) — same login on a different
-        // host still counts as a duplicate.
-        for (final p in page.portals) {
-          if (_verifiedKeys.contains(p.credKey)) continue;
-          if (_pendingKeys.contains(p.credKey)) continue;
-          _pendingKeys.add(p.credKey);
-          _pendingPortals.add(p);
-        }
-      }
+      // Outer loop: keep fetching catalog pages and verifying them until we
+      // collect [targetAlive] live portals OR the source runs out of pages
+      // OR we hit the safety cap.
+      while (newAlive.length < targetAlive && pagesTried < maxPagesPerPress) {
+        // ── Step 1: fetch fresh pages until the pending queue has work.
+        //         (Pending queue may already be non-empty from a prior
+        //         press that found enough alive portals before draining
+        //         everything — in that case we skip the fetch entirely.)
+        while (_pendingPortals.isEmpty && pagesTried < maxPagesPerPress) {
+          pagesTried++;
+          page = await IptvScraper.scrapeCatalogPage(
+            maxResults: 50,
+            after: _scrapeAfter,
+            source: scrapeSource,
+          );
+          _scrapeAfter = page.nextAfter;
 
-      if (_pendingPortals.isEmpty) {
-        statusText = (page != null && page.portals.isEmpty)
-            ? 'No portals found. Try Get More.'
-            : 'All on this page already verified.';
-        canGetMore = page?.hasMore ?? canGetMore;
-        isScraping = false;
+          // Add only portals we haven't already verified, attempted, or queued.
+          // Dedup is by credentials (user|pass) — same login on a different
+          // host still counts as a duplicate.
+          for (final p in page.portals) {
+            if (_verifiedKeys.contains(p.credKey)) continue;
+            if (_attemptedKeys.contains(p.credKey)) continue;
+            if (_pendingKeys.contains(p.credKey)) continue;
+            _pendingKeys.add(p.credKey);
+            _pendingPortals.add(p);
+          }
+
+          // No more pages from this source — bail out of the fetch loop.
+          if (_pendingPortals.isEmpty && !page.hasMore) {
+            exhausted = true;
+            break;
+          }
+        }
+
+        if (_pendingPortals.isEmpty) {
+          // Nothing left to verify and nothing left to fetch.
+          break;
+        }
+
+        // ── Step 2: verify what we've got. Only ask the verifier for
+        //         however many MORE alive portals we still need this press.
+        final remaining = targetAlive - newAlive.length;
+        statusText =
+            'Verifying ${_pendingPortals.length} portals  ·  need $remaining more';
         notifyListeners();
-        return;
-      }
 
-      statusText = 'Verifying ${_pendingPortals.length} portals…';
-      notifyListeners();
-
-      // Snapshot the queue: workers consume by index. We mark portals
-      // attempted (-> remove from pending) as the verifier drains them.
-      final snapshot = List<IptvPortal>.from(_pendingPortals);
-      final newAlive = <VerifiedPortal>[];
-      await IptvVerifier.verifyUntil(
-        portals: snapshot,
-        target: 5,
-        onAttempted: (p) {
-          if (_pendingKeys.remove(p.credKey)) {
-            _pendingPortals.removeWhere((x) => x.credKey == p.credKey);
-          }
-        },
-        onProgress: (c, t, a) {
-          statusText = 'Verifying $c / $t  ·  alive $a';
-          notifyListeners();
-        },
-        onAlive: (v) {
-          if (_verifiedKeys.add(v.credKey)) {
-            newAlive.add(v);
-            verified = _sortFavoritesFirst([...verified, v]);
+        final snapshot = List<IptvPortal>.from(_pendingPortals);
+        await IptvVerifier.verifyUntil(
+          portals: snapshot,
+          target: remaining,
+          onAttempted: (p) {
+            _attemptedKeys.add(p.credKey);
+            if (_pendingKeys.remove(p.credKey)) {
+              _pendingPortals.removeWhere((x) => x.credKey == p.credKey);
+            }
+          },
+          onProgress: (c, t, a) {
+            final total = newAlive.length + a;
+            statusText =
+                'Verifying $c / $t  ·  alive $total / $targetAlive';
             notifyListeners();
-          }
-        },
-      );
+          },
+          onAlive: (v) {
+            if (_verifiedKeys.add(v.credKey)) {
+              newAlive.add(v);
+              verified = _sortFavoritesFirst([...verified, v]);
+              notifyListeners();
+            }
+          },
+        );
+
+        // If we still need more and the queue is dry, the outer loop will
+        // fetch the next page automatically. If the source has no more
+        // pages either, we'll exit cleanly on the next iteration.
+        if (newAlive.length < targetAlive &&
+            _pendingPortals.isEmpty &&
+            (page == null || !page.hasMore)) {
+          exhausted = true;
+          break;
+        }
+      }
 
       if (newAlive.isNotEmpty) await IptvStore.save(verified);
+
       // Get-More is meaningful if either (a) we still have queued portals
       // we haven't verified yet, or (b) the catalog has more pages.
       canGetMore = _pendingPortals.isNotEmpty ||
           (page?.hasMore ?? canGetMore);
-      statusText = newAlive.isEmpty
-          ? (canGetMore
-              ? 'No new live portals. Try Get More.'
-              : 'No new live portals.')
-          : 'Found ${newAlive.length} new portals.'
-              '${_pendingPortals.isNotEmpty ? ' (${_pendingPortals.length} more queued)' : ''}';
+
+      if (newAlive.isEmpty) {
+        statusText = exhausted
+            ? 'No live portals found in this source.'
+            : (canGetMore
+                ? 'No new live portals. Try Get More.'
+                : 'No new live portals.');
+      } else {
+        final hit = newAlive.length >= targetAlive;
+        statusText = hit
+            ? 'Found ${newAlive.length} live portals.'
+            : 'Found ${newAlive.length} live portals'
+                '${exhausted ? ' (source exhausted).' : ' (stopped early).'}';
+        if (_pendingPortals.isNotEmpty) {
+          statusText += ' (${_pendingPortals.length} more queued)';
+        }
+      }
     } catch (e) {
       statusText = 'Scrape failed: $e';
     } finally {
@@ -307,20 +375,25 @@ class IptvController extends ChangeNotifier {
   }
 
   Future<void> runVerification() async {
-    if (verified.isEmpty) return;
+    final manual = manualVerified;
+    if (manual.isEmpty) return;
     statusText = 'Re-checking saved portals…';
     notifyListeners();
-    final updated = <VerifiedPortal>[];
-    for (final v in verified) {
+    // Only re-verify user-added (Manual) portals. Internally-scraped
+    // ones are kept untouched so the channel hub can still use them.
+    final manualKeys = manual.map((v) => v.key).toSet();
+    final scrapedKept = verified.where((v) => !manualKeys.contains(v.key)).toList();
+    final freshManual = <VerifiedPortal>[];
+    for (final v in manual) {
       final fresh = await IptvClient.verifyOrNull(v.portal);
-      if (fresh != null) updated.add(fresh);
+      if (fresh != null) freshManual.add(fresh);
     }
-    verified = _sortFavoritesFirst(updated);
+    verified = _sortFavoritesFirst([...freshManual, ...scrapedKept]);
     _verifiedKeys
       ..clear()
-      ..addAll(updated.map((v) => v.credKey));
+      ..addAll(verified.map((v) => v.credKey));
     await IptvStore.save(verified);
-    statusText = '${updated.length} portals still alive.';
+    statusText = '${freshManual.length} portals still alive.';
     notifyListeners();
   }
 
@@ -432,6 +505,154 @@ class IptvController extends ChangeNotifier {
       s = s.substring(0, s.length - 1);
     }
     return s;
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Bulk import from JSON
+  // ────────────────────────────────────────────────────────────────────────
+  bool isImporting = false;
+
+  /// Decode a username/password value: tolerates URL-encoded forms like
+  /// `live%3Apersian_share` -> `live:persian_share`. Falls back to raw
+  /// input when decoding throws.
+  String _decodeCred(String raw) {
+    final s = raw.trim();
+    if (!s.contains('%')) return s;
+    try {
+      return Uri.decodeComponent(s);
+    } catch (_) {
+      return s;
+    }
+  }
+
+  /// Parses a JSON file (string contents) of the form
+  /// `{ "portals": [ { "url", "username", "password", ... }, ... ] }`
+  /// and verifies + saves each unique entry as a Manual portal.
+  ///
+  /// Returns a (added, skipped, failed) tuple. `skipped` counts entries
+  /// already present in the local list; `failed` counts entries the
+  /// Xtream login refused or that didn't parse.
+  Future<({int added, int skipped, int failed, String? error})>
+      importFromJsonString(String contents) async {
+    if (isImporting) {
+      return (added: 0, skipped: 0, failed: 0, error: 'Already importing.');
+    }
+    List<IptvPortal> candidates;
+    try {
+      final decoded = json.decode(contents);
+      List<dynamic> raw;
+      if (decoded is Map<String, dynamic>) {
+        final p = decoded['portals'];
+        if (p is List) {
+          raw = p;
+        } else {
+          return (
+            added: 0,
+            skipped: 0,
+            failed: 0,
+            error: 'JSON missing "portals" array.'
+          );
+        }
+      } else if (decoded is List) {
+        raw = decoded;
+      } else {
+        return (
+          added: 0,
+          skipped: 0,
+          failed: 0,
+          error: 'Unsupported JSON shape.'
+        );
+      }
+      candidates = [];
+      for (final e in raw) {
+        if (e is! Map) continue;
+        final url = normalizeUrl(e['url']?.toString() ?? '');
+        final user = _decodeCred(e['username']?.toString() ?? '');
+        final pass = _decodeCred(e['password']?.toString() ?? '');
+        if (url.isEmpty || user.isEmpty || pass.isEmpty) continue;
+        candidates.add(IptvPortal(
+          url: url,
+          username: user,
+          password: pass,
+          source: 'Manual',
+        ));
+      }
+    } catch (e) {
+      return (added: 0, skipped: 0, failed: 0, error: 'Invalid JSON: $e');
+    }
+
+    if (candidates.isEmpty) {
+      return (
+        added: 0,
+        skipped: 0,
+        failed: 0,
+        error: 'No portal entries found.'
+      );
+    }
+
+    isImporting = true;
+    statusText = 'Importing 0 / ${candidates.length}…';
+    notifyListeners();
+
+    int added = 0, skipped = 0, failed = 0, done = 0;
+    final newAlive = <VerifiedPortal>[];
+    final seenInBatch = <String>{};
+
+    Future<void> work(IptvPortal p) async {
+      // Dedupe across the batch and against existing list.
+      if (_verifiedKeys.contains(p.credKey) ||
+          !seenInBatch.add(p.credKey)) {
+        skipped++;
+      } else {
+        final v = await IptvClient.verifyOrNull(p);
+        if (v == null) {
+          failed++;
+        } else {
+          // Tag as Manual even if the existing entry was scraped: this
+          // promotes the user-imported portal into the visible list.
+          final manualV = VerifiedPortal(
+            portal: IptvPortal(
+              url: v.portal.url,
+              username: v.portal.username,
+              password: v.portal.password,
+              source: 'Manual',
+            ),
+            name: v.name,
+            expiry: v.expiry,
+            maxConnections: v.maxConnections,
+            activeConnections: v.activeConnections,
+          );
+          newAlive.add(manualV);
+          _verifiedKeys.add(manualV.credKey);
+          added++;
+        }
+      }
+      done++;
+      statusText = 'Importing $done / ${candidates.length}…';
+      notifyListeners();
+    }
+
+    // Verify in parallel — same approach as scrape verifier, but simpler.
+    const concurrency = 8;
+    var idx = 0;
+    Future<void> worker() async {
+      while (idx < candidates.length) {
+        final i = idx++;
+        await work(candidates[i]);
+      }
+    }
+
+    await Future.wait(List.generate(concurrency, (_) => worker()));
+
+    if (newAlive.isNotEmpty) {
+      verified = _sortFavoritesFirst([...newAlive, ...verified]);
+      await IptvStore.save(verified);
+    }
+
+    isImporting = false;
+    statusText = 'Imported $added · skipped $skipped · failed $failed';
+    notifyListeners();
+    return (added: added, skipped: skipped, failed: failed, error: null);
   }
 
   // ────────────────────────────────────────────────────────────────────────
@@ -771,7 +992,7 @@ class IptvController extends ChangeNotifier {
         try {
           final after = _channelCatalogAfter[ch.id];
           final page = await IptvScraper.scrapeCatalogPage(
-              maxResults: 60, after: after);
+              maxResults: 60, after: after, source: scrapeSource);
           _channelCatalogAfter[ch.id] = page.nextAfter;
           final knownKeys = {
             ...pool.map((p) => p.key),

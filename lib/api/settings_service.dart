@@ -42,6 +42,7 @@ class SettingsService {
   // Torrent cache settings
   static const String _torrentCacheTypeKey = 'torrent_cache_type';
   static const String _torrentRamCacheMbKey = 'torrent_ram_cache_mb';
+  static const String _torrentConnectionsLimitKey = 'torrent_connections_limit';
 
   // Subtitle preferences
   static const String _subSizeKey = 'sub_size';
@@ -288,6 +289,19 @@ class SettingsService {
   Future<void> setTorrentRamCacheMb(int mb) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_torrentRamCacheMbKey, mb);
+  }
+
+  /// Per-torrent peer connection limit. Lower (5–25) often streams better
+  /// on high-seed swarms because a few slow peers can't head-of-line-block
+  /// the streaming reader. Default: 25 (matches libtorrent_flutter example).
+  Future<int> getTorrentConnectionsLimit() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_torrentConnectionsLimitKey) ?? 25;
+  }
+
+  Future<void> setTorrentConnectionsLimit(int limit) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_torrentConnectionsLimitKey, limit);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

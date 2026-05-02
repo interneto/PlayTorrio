@@ -79,18 +79,38 @@ class MusicPlayerService {
 
     // Listen to player state streams
     _player.stream.playing.listen((p) {
+      debugPrint('MusicPlayerService: playing state changed -> $p');
       isPlaying.value = p;
       // Request audio focus when starting to play
       if (p) {
         AudioSession.instance.then((s) => s.setActive(true));
       }
     });
-    _player.stream.buffering.listen((b) => isBuffering.value = b);
+    _player.stream.buffering.listen((b) {
+      debugPrint('MusicPlayerService: buffering -> $b');
+      isBuffering.value = b;
+    });
     _player.stream.position.listen((p) => position.value = p);
-    _player.stream.duration.listen((d) => duration.value = d);
+    _player.stream.duration.listen((d) {
+      if (d != Duration.zero) {
+        debugPrint('MusicPlayerService: duration loaded -> $d');
+      }
+      duration.value = d;
+    });
     _player.stream.playlistMode.listen((m) => loopMode.value = m);
 
+    _player.stream.error.listen((e) {
+      debugPrint('MusicPlayerService: PLAYER ERROR -> $e');
+    });
+    _player.stream.log.listen((l) {
+      // mpv-level logs (warn/error only to keep noise down).
+      if (l.level == 'error' || l.level == 'warn' || l.level == 'fatal') {
+        debugPrint('MusicPlayerService: mpv [${l.level}] ${l.prefix}: ${l.text}');
+      }
+    });
+
     _player.stream.completed.listen((completed) {
+      debugPrint('MusicPlayerService: completed -> $completed');
       if (completed && !_isLoadingTrack) {
         next();
       }
@@ -105,8 +125,10 @@ class MusicPlayerService {
     try {
       // 0. Set session active immediately
       final session = await AudioSession.instance;
-      await session.setActive(true);
+      final sessionOk = await session.setActive(true);
+      debugPrint('MusicPlayerService: audio session active=$sessionOk');
 
+      debugPrint('MusicPlayerService: stopping previous playback');
       await _player.stop();
 
       if (newPlaylist != null) {
@@ -147,40 +169,59 @@ class MusicPlayerService {
       if (track.localPath != null) {
         final file = File(track.localPath!);
         if (await file.exists()) {
-          debugPrint('MusicPlayerService: Playing from local storage');
-          await _player.open(Media(track.localPath!));
+          debugPrint('MusicPlayerService: Playing from local storage: ${track.localPath}');
+          try {
+            await _player.open(Media(track.localPath!));
+            debugPrint('MusicPlayerService: open() returned for local file');
+          } catch (e, st) {
+            debugPrint('MusicPlayerService: open() THREW for local file: $e\n$st');
+            rethrow;
+          }
           _prefetchNext();
           return;
+        } else {
+          debugPrint('MusicPlayerService: localPath set but file missing: ${track.localPath}');
         }
       }
 
       // 2. YouTube Match (cached + runs in background isolate)
+      debugPrint('MusicPlayerService: resolving videoId for "${track.title}" / "${track.artist}"');
       final videoId = await _musicService.getYoutubeVideoId(track.title, track.artist);
       if (_playGeneration != generation) {
-        debugPrint('MusicPlayerService: Cancelled — newer track requested');
+        debugPrint('MusicPlayerService: Cancelled (after videoId) — newer track requested');
         return;
       }
       if (videoId == null) {
         debugPrint('MusicPlayerService: No YouTube match');
         return;
       }
+      debugPrint('MusicPlayerService: videoId=$videoId');
 
       // 3. Stream URL (cached + runs in background isolate)
       final streamUrl = await _musicService.getYoutubeStreamUrl(videoId);
       if (_playGeneration != generation) {
-        debugPrint('MusicPlayerService: Cancelled — newer track requested');
+        debugPrint('MusicPlayerService: Cancelled (after streamUrl) — newer track requested');
         return;
       }
-      if (streamUrl == null) {
-        debugPrint('MusicPlayerService: Failed to get stream URL');
+      if (streamUrl == null || streamUrl.isEmpty) {
+        debugPrint('MusicPlayerService: Failed to get stream URL (null/empty)');
         return;
       }
+      final preview = streamUrl.length > 120 ? '${streamUrl.substring(0, 120)}…' : streamUrl;
+      debugPrint('MusicPlayerService: streamUrl=$preview');
 
-      await _player.open(Media(streamUrl));
+      try {
+        debugPrint('MusicPlayerService: calling player.open()');
+        await _player.open(Media(streamUrl));
+        debugPrint('MusicPlayerService: open() returned, playing=${_player.state.playing}');
+      } catch (e, st) {
+        debugPrint('MusicPlayerService: open() THREW: $e\n$st');
+        rethrow;
+      }
       _prefetchNext();
       
-    } catch (e) {
-      debugPrint('MusicPlayerService: Error playing track: $e');
+    } catch (e, st) {
+      debugPrint('MusicPlayerService: Error playing track: $e\n$st');
     } finally {
       Future.delayed(const Duration(milliseconds: 1500), () {
         _isLoadingTrack = false;

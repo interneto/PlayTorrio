@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'local_server_service.dart';
 import 'settings_service.dart';
 import 'stremio_service.dart';
+import 'subtitlecat_service.dart';
 
 class SubtitleApi {
   // Legacy method for backward compatibility if needed
@@ -12,12 +14,16 @@ class SubtitleApi {
     String? imdbId,
     int? season,
     int? episode,
+    String? title,
+    int? year,
   }) async {
     final stream = fetchSubtitlesStream(
       tmdbId: tmdbId,
       imdbId: imdbId,
       season: season,
       episode: episode,
+      title: title,
+      year: year,
     );
     
     List<Map<String, dynamic>> finalSubs = [];
@@ -33,6 +39,8 @@ class SubtitleApi {
     String? imdbId,
     int? season,
     int? episode,
+    String? title,
+    int? year,
   }) async* {
     final List<Map<String, dynamic>> allSubs = [];
     final stremio = StremioService();
@@ -44,6 +52,16 @@ class SubtitleApi {
 
     // Levrx
     tasks.add(_fetchLevrx(tmdbId, season, episode));
+
+    // SubtitleCat (scraping + on-demand Google translation)
+    if (title != null && title.trim().isNotEmpty) {
+      tasks.add(_fetchSubtitleCat(
+        title: title,
+        year: year,
+        season: season,
+        episode: episode,
+      ));
+    }
 
     // Stremio addon subtitles
     if (imdbId != null) {
@@ -202,6 +220,34 @@ class SubtitleApi {
       'Vietnamese': 'vi',
     };
     return map[category] ?? category.toLowerCase().substring(0, category.length.clamp(2, 2));
+  }
+
+  // ── SubtitleCat ────────────────────────────────────────────────────────────
+
+  static Future<List<Map<String, dynamic>>> _fetchSubtitleCat({
+    required String title,
+    int? year,
+    int? season,
+    int? episode,
+  }) async {
+    try {
+      // Translation entries route through the local proxy server so the
+      // player can fetch a translated SRT on demand.
+      final localPort = LocalServerService().port;
+      final translateBase =
+          localPort > 0 ? 'http://localhost:$localPort' : null;
+
+      return await SubtitleCatService.instance.fetchAll(
+        title: title,
+        year: year,
+        season: season,
+        episode: episode,
+        translateBaseUrl: translateBase,
+      );
+    } catch (e) {
+      debugPrint('SubtitleCat error: $e');
+      return [];
+    }
   }
 }
 

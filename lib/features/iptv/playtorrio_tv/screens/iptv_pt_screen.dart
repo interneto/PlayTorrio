@@ -159,6 +159,79 @@ class _PtAppBar extends StatelessWidget {
   }
 }
 
+class _SourceChip extends StatelessWidget {
+  final String label;
+  final String tag;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+  const _SourceChip({
+    required this.label,
+    required this.tag,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: enabled ? 1 : 0.5,
+      child: Material(
+        color: Colors.transparent,
+        child: Ink(
+          decoration: BoxDecoration(
+            gradient: selected
+                ? const LinearGradient(
+                    colors: [Color(0xFF1565C0), Color(0xFF00E5FF)],
+                  )
+                : null,
+            color: selected ? null : Colors.white.withValues(alpha: 0.04),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected
+                  ? Colors.transparent
+                  : Colors.white.withValues(alpha: 0.12),
+            ),
+          ),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: enabled ? onTap : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    tag,
+                    style: GoogleFonts.poppins(
+                      color: selected
+                          ? Colors.white
+                          : const Color(0xFF00E5FF),
+                      fontWeight: FontWeight.w500,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _PrimaryButton extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -409,41 +482,74 @@ class _PortalListView extends StatelessWidget {
           top: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
         ),
       ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            _PrimaryButton(
-              icon: Icons.travel_explore,
-              label: 'Scrape',
-              busy: ctrl.isScraping,
-              onPressed: ctrl.scrape,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildSourcePicker(),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _PrimaryButton(
+                  icon: Icons.travel_explore,
+                  label: 'Scrape',
+                  busy: ctrl.isScraping,
+                  onPressed: ctrl.scrape,
+                ),
+                const SizedBox(width: 8),
+                if (ctrl.canGetMore)
+                  _PrimaryButton(
+                    icon: Icons.add_circle_outline,
+                    label: 'Get More',
+                    subtle: true,
+                    onPressed: ctrl.isScraping ? null : ctrl.getMore,
+                  ),
+                if (ctrl.canGetMore) const SizedBox(width: 8),
+                _PrimaryButton(
+                  icon: Icons.tv_rounded,
+                  label: 'Channels',
+                  subtle: true,
+                  onPressed: ctrl.openChannelsHub,
+                ),
+                const SizedBox(width: 8),
+                if (ctrl.verified.isNotEmpty)
+                  _PrimaryButton(
+                    icon: Icons.refresh_rounded,
+                    label: 'Re-verify',
+                    subtle: true,
+                    onPressed: ctrl.runVerification,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSourcePicker() {
+    const items = <(CatalogSource, String, String)>[
+      (CatalogSource.best, 'Source 1', 'Best'),
+      (CatalogSource.fastest, 'Source 2', 'Fastest'),
+      (CatalogSource.works, 'Source 3', 'Works'),
+    ];
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final it in items) ...[
+            _SourceChip(
+              label: it.$2,
+              tag: it.$3,
+              selected: ctrl.scrapeSource == it.$1,
+              enabled: !ctrl.isScraping,
+              onTap: () => ctrl.setScrapeSource(it.$1),
             ),
             const SizedBox(width: 8),
-            if (ctrl.canGetMore)
-              _PrimaryButton(
-                icon: Icons.add_circle_outline,
-                label: 'Get More',
-                subtle: true,
-                onPressed: ctrl.isScraping ? null : ctrl.getMore,
-              ),
-            if (ctrl.canGetMore) const SizedBox(width: 8),
-            _PrimaryButton(
-              icon: Icons.tv_rounded,
-              label: 'Channels',
-              subtle: true,
-              onPressed: ctrl.openChannelsHub,
-            ),
-            const SizedBox(width: 8),
-            if (ctrl.verified.isNotEmpty)
-              _PrimaryButton(
-                icon: Icons.refresh_rounded,
-                label: 'Re-verify',
-                subtle: true,
-                onPressed: ctrl.runVerification,
-              ),
           ],
-        ),
+        ],
       ),
     );
   }

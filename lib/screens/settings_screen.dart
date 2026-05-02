@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../api/settings_service.dart';
 import '../api/stremio_service.dart';
+import '../api/torrent_stream_service.dart';
 import '../services/external_player_service.dart';
 import '../api/debrid_api.dart';
 import '../api/trakt_service.dart';
@@ -99,6 +100,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Torrent cache
   String _torrentCacheType = 'ram';
   int _torrentRamCacheMb = 200;
+  int _torrentConnectionsLimit = 25;
 
   // Light mode
   bool _isLightMode = false;
@@ -168,6 +170,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Load torrent cache settings
     final cacheType = await _settings.getTorrentCacheType();
     final ramCacheMb = await _settings.getTorrentRamCacheMb();
+    final connLimit = await _settings.getTorrentConnectionsLimit();
 
     // Load light mode
     final lightMode = await _settings.isLightModeEnabled();
@@ -216,6 +219,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _prowlarrSelectedTagIds = prowlarrTagIds.toSet();
         _torrentCacheType = cacheType;
         _torrentRamCacheMb = ramCacheMb;
+        _torrentConnectionsLimit = connLimit;
         _isLightMode = lightMode;
         _selectedThemeId = themePreset;
         _navbarVisible = navVisible;
@@ -459,6 +463,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ),
                             ],
                           ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(left: 4, top: 8, bottom: 0),
+                              child: Text(
+                                'Connections per torrent: $_torrentConnectionsLimit',
+                                style: const TextStyle(color: Colors.white70, fontSize: 14),
+                              ),
+                            ),
+                            const Padding(
+                              padding: EdgeInsets.only(left: 4, bottom: 4),
+                              child: Text(
+                                'Lower (5–25) often streams better on high-seed swarms.',
+                                style: TextStyle(color: Colors.white38, fontSize: 11),
+                              ),
+                            ),
+                            Slider(
+                              value: _torrentConnectionsLimit.toDouble().clamp(5, 200),
+                              min: 5, max: 200, divisions: 39,
+                              activeColor: Colors.deepPurpleAccent,
+                              inactiveColor: Colors.white12,
+                              label: '$_torrentConnectionsLimit',
+                              onChanged: (val) => setState(
+                                  () => _torrentConnectionsLimit = val.round()),
+                              onChangeEnd: (val) async {
+                                await TorrentStreamService()
+                                    .applyConnectionsLimit(val.round());
+                              },
+                            ),
+                          ],
+                        ),
                       ],
                     ),
 
@@ -599,7 +635,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const SizedBox(height: 40),
                     const Center(
                       child: Text(
-                        'PlayTorrio Native v1.2.2',
+                        'PlayTorrio Native v1.2.4',
                         style: TextStyle(color: Colors.white24, fontSize: 12, letterSpacing: 2, fontWeight: FontWeight.bold),
                       ),
                     ),

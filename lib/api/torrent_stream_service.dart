@@ -91,7 +91,38 @@ class TorrentStreamService {
 
     _setState(EngineState.starting);
     try {
-      await LibtorrentFlutter.init();
+      // Faster poll for snappier UI updates (matches the libtorrent_flutter
+      // example app — 200ms vs the 600ms default).
+      await LibtorrentFlutter.init(
+        fetchTrackers: true,
+        pollInterval: const Duration(milliseconds: 200),
+      );
+
+      // Apply streaming-tuned session config. Mirrors the libtorrent_flutter
+      // example app defaults: low per-torrent connection limit so that a
+      // few slow peers can't head-of-line-block the streaming reader on
+      // high-seed swarms (TorrServer's well-known default), responsive
+      // mode on for low-latency piece picking, encryption optional. The
+      // connections limit is user-configurable (default 5).
+      try {
+        final engine = LibtorrentFlutter.instance;
+        final connLimit = await _settings.getTorrentConnectionsLimit();
+        engine.configureSession(engine.getDefaultConfig().copyWith(
+          connectionsLimit: connLimit,
+          responsiveMode: true,
+          readerReadAhead: 95,
+          preloadCache: 50,
+          forceEncrypt: false,
+          disableDht: false,
+          disableUpnp: false,
+          downloadRateLimit: 0,
+          uploadRateLimit: 0,
+        ));
+        _log('Session configured: conns=$connLimit, responsive=true');
+      } catch (e) {
+        _log('configureSession failed (non-fatal): $e');
+      }
+
       _torrentUpdatesSub = LibtorrentFlutter.instance.torrentUpdates.listen((updates) {
         _latestUpdates.addAll(updates);
       });
@@ -102,6 +133,33 @@ class TorrentStreamService {
       _log('Failed to start engine: $e\n$st');
       _setState(EngineState.error);
       return false;
+    }
+  }
+
+  /// Live-update the per-torrent peer connection limit. Persists the new
+  /// value and reconfigures the running session immediately so the change
+  /// takes effect on the next torrent (and on existing torrents the next
+  /// time libtorrent rebalances peers).
+  Future<void> applyConnectionsLimit(int limit) async {
+    final clamped = limit.clamp(5, 200);
+    await _settings.setTorrentConnectionsLimit(clamped);
+    if (_state != EngineState.ready) return;
+    try {
+      final engine = LibtorrentFlutter.instance;
+      engine.configureSession(engine.getDefaultConfig().copyWith(
+        connectionsLimit: clamped,
+        responsiveMode: true,
+        readerReadAhead: 95,
+        preloadCache: 50,
+        forceEncrypt: false,
+        disableDht: false,
+        disableUpnp: false,
+        downloadRateLimit: 0,
+        uploadRateLimit: 0,
+      ));
+      _log('Connections limit updated: $clamped');
+    } catch (e) {
+      _log('applyConnectionsLimit failed: $e');
     }
   }
 
