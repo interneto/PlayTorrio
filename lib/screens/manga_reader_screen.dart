@@ -20,6 +20,12 @@ class MangaReaderScreen extends StatefulWidget {
     this.resumePageIndex,
   });
 
+  /// Bumped whenever the reading history is saved or removed.
+  /// MangaScreen listens to this so the Continue Reading list updates
+  /// without needing the screen to be popped or the app to be resumed.
+  static final ValueNotifier<int> readingHistoryRevision =
+      ValueNotifier<int>(0);
+
   @override
   State<MangaReaderScreen> createState() => _MangaReaderScreenState();
 }
@@ -151,6 +157,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     }
     
     await prefs.setStringList(_historyKey, history.map((e) => jsonEncode(e)).toList());
+    MangaReaderScreen.readingHistoryRevision.value++;
   }
 
   void _setZoom(double scale) {

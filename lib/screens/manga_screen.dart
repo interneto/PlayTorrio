@@ -36,6 +36,8 @@ class _MangaScreenState extends State<MangaScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    MangaReaderScreen.readingHistoryRevision
+        .addListener(_onHistoryChanged);
     _loadLikedStatus();
     _loadHistory();
     if (widget.initialSearch != null && widget.initialSearch!.isNotEmpty) {
@@ -47,10 +49,14 @@ class _MangaScreenState extends State<MangaScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    MangaReaderScreen.readingHistoryRevision
+        .removeListener(_onHistoryChanged);
     _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
+
+  void _onHistoryChanged() => _loadHistory();
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -106,6 +112,7 @@ class _MangaScreenState extends State<MangaScreen> with WidgetsBindingObserver {
     history.removeWhere((h) => h['manga']['id'] == id);
     
     await prefs.setStringList('manga_reading_history', history.map((e) => jsonEncode(e)).toList());
+    MangaReaderScreen.readingHistoryRevision.value++;
     _loadHistory();
   }
 
@@ -773,17 +780,11 @@ class _MangaCardState extends State<_MangaCard> {
         ).then((_) {
           if (!mounted) return;
           widget.onLikeChanged();
-        });
-
-        // Reload history when screen becomes visible again
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            final mangaScreenState =
-                context.findAncestorStateOfType<_MangaScreenState>();
-            if (mangaScreenState != null) {
-              mangaScreenState._loadHistory();
-            }
-          }
+          // Reading history may have changed inside details/reader —
+          // tell the parent screen to reload it.
+          final mangaScreenState =
+              context.findAncestorStateOfType<_MangaScreenState>();
+          mangaScreenState?._loadHistory();
         });
       },
       borderRadius: 16,

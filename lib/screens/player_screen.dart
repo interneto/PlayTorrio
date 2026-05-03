@@ -25,6 +25,13 @@ class PlayerScreen extends StatefulWidget {
   final String? stremioId;
   final String? stremioAddonBaseUrl;
 
+  /// External next-episode handler. When provided, the in-player "Next
+  /// Episode" button will route through this callback instead of running the
+  /// built-in TMDB / torrent / WebStreamr resolution. Used by anime so the
+  /// resolver can re-race all sources for the next episode.
+  final Future<void> Function()? onNextEpisode;
+  final bool hasNextEpisode;
+
   const PlayerScreen({
     super.key,
     required this.streamUrl,
@@ -43,6 +50,8 @@ class PlayerScreen extends StatefulWidget {
     this.externalSubtitles,
     this.stremioId,
     this.stremioAddonBaseUrl,
+    this.onNextEpisode,
+    this.hasNextEpisode = false,
   });
 
   @override
@@ -161,6 +170,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
         stremioId: widget.stremioId,
         stremioAddonBaseUrl: widget.stremioAddonBaseUrl,
         providers: widget.providers,
+        onNextEpisode: widget.onNextEpisode,
+        hasNextEpisode: widget.hasNextEpisode,
       );
     } else {
       return DesktopPlayerScreen(
@@ -180,6 +191,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
         stremioId: widget.stremioId,
         stremioAddonBaseUrl: widget.stremioAddonBaseUrl,
         providers: widget.providers,
+        onNextEpisode: widget.onNextEpisode,
+        hasNextEpisode: widget.hasNextEpisode,
       );
     }
   }

@@ -397,6 +397,8 @@ class MobilePlayerScreen extends StatefulWidget {
   final String? stremioId;
   final String? stremioAddonBaseUrl;
   final Map<String, dynamic>? providers;
+  final Future<void> Function()? onNextEpisode;
+  final bool hasNextEpisode;
 
   const MobilePlayerScreen({
     super.key,
@@ -416,6 +418,8 @@ class MobilePlayerScreen extends StatefulWidget {
     this.stremioId,
     this.stremioAddonBaseUrl,
     this.providers,
+    this.onNextEpisode,
+    this.hasNextEpisode = false,
   });
 
   @override
@@ -1483,13 +1487,32 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
 
     final messenger = ScaffoldMessenger.of(context);
     try {
+      // Many subtitle CDNs (megacloud, vid-cdn, etc.) gate on a browser UA
+      // and the embed-host Referer (NOT the sub URL's own host). Prefer the
+      // referer/origin the extractor passed through; otherwise fall back to
+      // the sub URL's own origin.
+      final subUri = Uri.parse(url);
+      final selfOrigin = '${subUri.scheme}://${subUri.host}';
+      final ref = (s['referer'] as String?)?.trim();
+      final org = (s['origin'] as String?)?.trim();
+      final headers = <String, String>{
+        'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Referer': (ref != null && ref.isNotEmpty) ? ref : '$selfOrigin/',
+        'Origin': (org != null && org.isNotEmpty) ? org : selfOrigin,
+      };
       final res = await http
-          .get(Uri.parse(url))
+          .get(subUri, headers: headers)
           .timeout(Duration(minutes: isTranslated ? 5 : 1));
       if (!mounted) return;
       if (res.statusCode != 200) {
+        if (mounted) {
+          setState(() => _selectedExternalSubUrl = null);
+        }
         messenger.showSnackBar(SnackBar(
-            content: Text('Subtitle failed (${res.statusCode})')));
+            content: Text('Subtitle failed (${res.statusCode}) — tap to retry')));
         return;
       }
       final dir = await getTemporaryDirectory();
@@ -1510,8 +1533,9 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
       }
     } catch (e) {
       if (!mounted) return;
+      setState(() => _selectedExternalSubUrl = null);
       messenger.showSnackBar(
-          SnackBar(content: Text('Subtitle failed: $e')));
+          SnackBar(content: Text('Subtitle failed: $e — tap to retry')));
     }
   }
 
@@ -2638,10 +2662,11 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
   // ─────────────────────────────────────────────────────────────────────────
 
   bool get _isNextEpisodeAvailable =>
-      widget.movie != null &&
-      widget.movie!.mediaType == 'tv' &&
-      widget.selectedSeason != null &&
-      widget.selectedEpisode != null;
+      (widget.onNextEpisode != null && widget.hasNextEpisode) ||
+      (widget.movie != null &&
+          widget.movie!.mediaType == 'tv' &&
+          widget.selectedSeason != null &&
+          widget.selectedEpisode != null);
 
   bool get _showNextEpButton =>
       _isNextEpisodeAvailable && (_nearEndOfEpisode || _isLoadingNextEp);
@@ -2650,6 +2675,24 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
     if (!_isNextEpisodeAvailable || _isLoadingNextEp) return;
 
     setState(() => _isLoadingNextEp = true);
+
+    // Anime / external resolver path — the caller knows how to fetch the
+    // next episode and will navigate themselves. Save history first so the
+    // current position isn't lost.
+    if (widget.onNextEpisode != null) {
+      try {
+        _saveWatchHistory();
+        await widget.onNextEpisode!();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Next episode failed: $e')),
+          );
+          setState(() => _isLoadingNextEp = false);
+        }
+      }
+      return;
+    }
 
     try {
       final tmdb = TmdbService();
