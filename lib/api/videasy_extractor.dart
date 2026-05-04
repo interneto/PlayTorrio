@@ -110,9 +110,12 @@ class VideasyExtractor {
       return null;
     }
 
+    // NOTE: mediaType is case-sensitive on the api.videasy.net side.
+    // `Movie` works for either casing, but TV requires lowercase `tv` —
+    // capital `TV` returns 500 across every provider. Verified 2026-05.
     final qp = <String, String>{
       'tmdbId': tmdbId,
-      'mediaType': isMovie ? 'Movie' : 'TV',
+      'mediaType': isMovie ? 'movie' : 'tv',
     };
     if (!isMovie) {
       qp['seasonId'] = '${season ?? 1}';
