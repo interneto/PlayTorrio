@@ -573,16 +573,6 @@ class _LiveMatchesScreenState extends State<LiveMatchesScreen>
               _load();
             },
           ),
-          const SizedBox(width: 8),
-          _ModeChip(
-            label: '📺 CDN Live',
-            active: _provider == _DataProvider.cdnLive,
-            onTap: () {
-              if (_provider == _DataProvider.cdnLive) return;
-              setState(() { _provider = _DataProvider.cdnLive; });
-              _load();
-            },
-          ),
         ],
       ),
     );

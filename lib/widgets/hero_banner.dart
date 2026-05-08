@@ -7,6 +7,7 @@ import '../screens/details_screen.dart';
 import '../screens/streaming_details_screen.dart';
 import '../api/settings_service.dart';
 import '../utils/extensions.dart';
+import '../utils/smooth_page_route.dart';
 
 class HeroBanner extends StatefulWidget {
   final List<Movie> movies;
@@ -254,7 +255,7 @@ class _HeroBannerState extends State<HeroBanner> {
     final isStreamingMode = await SettingsService().isStreamingModeEnabled();
     if (mounted) {
       navigator.push(
-        MaterialPageRoute(
+        SmoothDetailsRoute(
           builder: (context) => isStreamingMode
               ? StreamingDetailsScreen(movie: movie)
               : DetailsScreen(movie: movie),

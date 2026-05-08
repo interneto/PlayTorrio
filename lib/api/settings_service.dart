@@ -373,10 +373,11 @@ class SettingsService {
 
   /// Per-torrent peer connection limit. Lower (5–25) often streams better
   /// on high-seed swarms because a few slow peers can't head-of-line-block
-  /// the streaming reader. Default: 25 (matches libtorrent_flutter example).
+  /// the streaming reader. Default: 200 (Stremio-grade — high parallelism
+  /// for fast first-byte and sustained throughput on healthy swarms).
   Future<int> getTorrentConnectionsLimit() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getInt(_torrentConnectionsLimitKey) ?? 25;
+    return prefs.getInt(_torrentConnectionsLimitKey) ?? 200;
   }
 
   Future<void> setTorrentConnectionsLimit(int limit) async {

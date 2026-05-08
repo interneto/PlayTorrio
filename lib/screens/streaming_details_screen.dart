@@ -302,7 +302,7 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
       List<Map<String, dynamic>>? subtitles,
     }) {
       if (Navigator.canPop(context)) Navigator.pop(context);
-      Navigator.push(
+      Navigator.push<dynamic>(
         context,
         MaterialPageRoute(
           builder: (context) => PlayerScreen(
@@ -320,7 +320,26 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
             externalSubtitles: subtitles,
           ),
         ),
-      );
+      ).then((result) {
+        // ── Streaming-mode "Next Episode" handoff ──────────────────────
+        // The player pops with {nextSeason, nextEpisode} when the user
+        // hits the Next Episode button. Instead of re-resolving sources
+        // inside the player (which only knows about the active provider
+        // and breaks for providers without a `tv` entry), we just bump
+        // the selected episode here and re-run the full provider
+        // fallback chain — same path taken when the user taps an
+        // episode card manually.
+        if (!mounted || result is! Map) return;
+        final nextSeason = result['nextSeason'];
+        final nextEpisode = result['nextEpisode'];
+        if (nextSeason is! int || nextEpisode is! int) return;
+        setState(() {
+          _selectedSeason = nextSeason;
+          _selectedEpisode = nextEpisode;
+        });
+        _loadWatchedEpisodes();
+        _startExtraction();
+      });
     }
 
     if (key == 'service111477') {

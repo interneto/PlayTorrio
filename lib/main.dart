@@ -254,6 +254,24 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
 
+  /// Minimum time the splash overlay stays visible. Engine starts almost
+  /// instantly, so we hold the splash a bit longer to let MainScreen /
+  /// HomeScreen build, layout, paint and prefetch in the background. That
+  /// way, when the overlay fades out, the first frames of the real UI are
+  /// already warm and scrolling is smooth instead of janky.
+  static const Duration _minSplashDuration = Duration(milliseconds: 2800);
+
+  /// Built once and kept alive in the widget tree behind the splash overlay
+  /// so its element (and all child State objects) survive the transition
+  /// without being re-created.
+  final Widget _mainScreen = const MainScreen();
+
+  /// True while the splash overlay should still be drawn on top.
+  bool _showOverlay = true;
+
+  /// Drives the fade-out of the splash overlay once the engine is ready.
+  double _overlayOpacity = 1.0;
+
   @override
   void initState() {
     super.initState();
@@ -269,11 +287,23 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
     _initEngine();
   }
 
+  /// Called once the engine is ready AND the minimum splash time has
+  /// elapsed. Triggers the fade-out and then removes the overlay from
+  /// the tree, leaving the already-warm MainScreen in place.
+  void _dismissSplash() {
+    if (!mounted || !_showOverlay) return;
+    setState(() => _overlayOpacity = 0.0);
+  }
+
   Future<void> _initEngine() async {
     debugPrint('═══════════════════════════════════════════════════════════');
     debugPrint('[Boot] Starting engine initialization...');
     debugPrint('═══════════════════════════════════════════════════════════');
-    
+
+    // Start the minimum-display timer in parallel with all init work so
+    // the splash never flashes by too quickly even when the engine is hot.
+    final minSplashFuture = Future<void>.delayed(_minSplashDuration);
+
     debugPrint('[Boot] Step 1: Checking network connectivity...');
     final connectivityResult = await Connectivity().checkConnectivity();
     final isOffline = connectivityResult.contains(ConnectivityResult.none);
@@ -287,11 +317,10 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
         return null;
       });
       debugPrint('[Boot] ✓ Local services initialized');
+      await minSplashFuture;
       if (mounted) {
-        debugPrint('[Boot] Navigating to MainScreen (offline mode)');
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (context) => const MainScreen()),
-        );
+        debugPrint('[Boot] Dismissing splash (offline mode)');
+        _dismissSplash();
       }
       return;
     }
@@ -363,18 +392,15 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
     // ignore: unused_local_variable
     const warmupDiscover = DiscoverScreen();
     debugPrint('[Boot] ✓ Screens pre-warmed');
-    
+
+    debugPrint('[Boot] Step 5: Waiting for minimum splash time so the '
+        'pre-built MainScreen / HomeScreen finishes its first paints...');
+    await minSplashFuture;
+
     if (mounted) {
-      debugPrint('[Boot] Step 6: Navigating to MainScreen...');
-      Navigator.of(context).pushReplacement(
-        PageRouteBuilder(
-          pageBuilder: (context, animation, secondaryAnimation) => const MainScreen(),
-          transitionsBuilder: (context, animation, secondaryAnimation, child) {
-            return FadeTransition(opacity: animation, child: child);
-          },
-          transitionDuration: const Duration(milliseconds: 800),
-        ),
-      );
+      debugPrint('[Boot] Step 6: Dismissing splash overlay (MainScreen '
+          'already mounted underneath)');
+      _dismissSplash();
       debugPrint('═══════════════════════════════════════════════════════════');
       debugPrint('[Boot] ✓✓✓ ENGINE INITIALIZATION COMPLETE ✓✓✓');
       debugPrint('═══════════════════════════════════════════════════════════');
@@ -391,6 +417,39 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
 
   @override
   Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // The real app — built and laid out behind the splash so widgets,
+        // images, fonts and HomeScreen network requests are all warm by
+        // the time the overlay fades out.
+        Positioned.fill(
+          child: IgnorePointer(
+            ignoring: _showOverlay,
+            child: _mainScreen,
+          ),
+        ),
+        if (_showOverlay)
+          Positioned.fill(
+            child: IgnorePointer(
+              ignoring: true,
+              child: AnimatedOpacity(
+                opacity: _overlayOpacity,
+                duration: const Duration(milliseconds: 600),
+                curve: Curves.easeOut,
+                onEnd: () {
+                  if (_overlayOpacity == 0.0 && mounted) {
+                    setState(() => _showOverlay = false);
+                  }
+                },
+                child: _buildSplashOverlay(),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildSplashOverlay() {
     return Scaffold(
       body: Container(
         decoration: AppTheme.backgroundDecoration,

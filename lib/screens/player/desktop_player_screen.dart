@@ -45,6 +45,7 @@ import '../../api/torrent_filter.dart';
 import '../../api/tmdb_service.dart';
 import '../../api/introdb_service.dart';
 import '../player_screen.dart';
+import '../../services/pip_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  GLASSY WIDGET PRIMITIVES  (MPVEx-style frosted black glass)
@@ -456,6 +457,9 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
   Timer? _hideTimer;
   bool _isFullscreen = false;
   BoxFit _videoFit = BoxFit.contain;
+  bool _isPipMode = false;
+  bool _pipHover = false;
+  StreamSubscription<bool>? _pipSub;
 
   // ── Resume State ─────────────────────────────────────────────────────────
   bool _hasInitialSeek = false;
@@ -548,6 +552,12 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
     windowManager.addListener(this);
     WidgetsBinding.instance.addObserver(this);
 
+    // Track desktop PiP state so we can hide all controls when active.
+    _pipSub = PipService.instance.desktopPipChanges.listen((on) {
+      if (!mounted) return;
+      setState(() => _isPipMode = on);
+    });
+
     // ── Create player with minimal overhead config ────────────────────────
     _player = Player(
       configuration: const PlayerConfiguration(
@@ -618,6 +628,12 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
     windowManager.removeListener(this);
     WidgetsBinding.instance.removeObserver(this);
     _hideTimer?.cancel();
+    _pipSub?.cancel();
+    // If we tear down while in PiP, restore window chrome so the next
+    // screen doesn't inherit a tiny frameless 480x270 window.
+    if (PipService.instance.isDesktopActive) {
+      PipService.instance.leave();
+    }
 
     // Cancel all subscriptions
     _positionSub?.cancel();
@@ -1190,6 +1206,24 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
       // Ignore non-fatal audio errors (video continues playing)
       if (err.contains('Error decoding audio') ||
           err.contains('Failed to initialize a decoder for codec')) {
+        return;
+      }
+
+      // Ignore subtitle-fetch errors (HTTP 502/404 from sub providers,
+      // bad SRT, codec issues, etc.). These should NOT kill video
+      // playback or rotate the video fallback chain.
+      final lower = err.toLowerCase();
+      final isSubError = lower.contains('subtitle') ||
+          lower.contains('sub-add') ||
+          lower.contains('external file') ||
+          lower.contains('.srt') ||
+          lower.contains('.vtt') ||
+          lower.contains('.ass') ||
+          lower.contains('.ssa') ||
+          lower.contains('502') ||
+          lower.contains('http error');
+      if (isSubError) {
+        debugPrint('🟡 Sub error (ignored): $err');
         return;
       }
       
@@ -2021,17 +2055,17 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
     }
   }
 
-  TextStyle _buildSubtitleTextStyle() {
+  TextStyle _buildSubtitleTextStyle({double scale = 1.0}) {
     final base = TextStyle(
       height: 1.4,
-      fontSize: _subtitleSize,
+      fontSize: _subtitleSize * scale,
       letterSpacing: 0.0,
       wordSpacing: 0.0,
       color: _subtitleColor,
       fontWeight: _subtitleBold ? FontWeight.bold : FontWeight.normal,
       backgroundColor: Colors.black.withValues(alpha: _subtitleBgOpacity),
-      shadows: const [
-        Shadow(blurRadius: 10, color: Colors.black, offset: Offset.zero),
+      shadows: [
+        Shadow(blurRadius: 10 * scale, color: Colors.black, offset: Offset.zero),
       ],
     );
     if (_subtitleFont == 'Default') return base;
@@ -2516,6 +2550,69 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
         _saveWatchHistory();
         await widget.onNextEpisode!();
       } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Next episode failed: $e')),
+          );
+          setState(() => _isLoadingNextEp = false);
+        }
+      }
+      return;
+    }
+
+    // ── Streaming-mode shortcut ─────────────────────────────────────────
+    // When launched from streaming_details_screen (= a `providers` map
+    // was passed), don't try to re-resolve the source here. Instead,
+    // pop back with {nextSeason, nextEpisode} so streaming_details can
+    // re-run the full provider fallback chain — same path the user
+    // gets when tapping an episode card manually. Fixes "Provider X
+    // does not support TV" when the active provider lacks a `tv`
+    // entry but other providers in the chain would have worked.
+    final isStreamingMode = widget.providers != null &&
+        widget.providers!.isNotEmpty &&
+        widget.movie != null &&
+        widget.movie!.mediaType == 'tv' &&
+        widget.selectedSeason != null &&
+        widget.selectedEpisode != null;
+    if (isStreamingMode) {
+      try {
+        final tmdb = TmdbService();
+        final tvId = widget.movie!.id;
+        int nextSeason = widget.selectedSeason!;
+        int nextEpisode = widget.selectedEpisode! + 1;
+
+        final seasonData = await tmdb.getTvSeasonDetails(tvId, nextSeason);
+        final episodes = seasonData['episodes'] as List<dynamic>? ?? [];
+        final maxEp = episodes.isNotEmpty
+            ? episodes
+                .map((e) => e['episode_number'] as int)
+                .reduce((a, b) => a > b ? a : b)
+            : 0;
+
+        if (nextEpisode > maxEp) {
+          final totalSeasons = await tmdb.getTvSeasonCount(tvId);
+          if (nextSeason < totalSeasons) {
+            nextSeason++;
+            nextEpisode = 1;
+          } else {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('No more episodes available')),
+              );
+              setState(() => _isLoadingNextEp = false);
+            }
+            return;
+          }
+        }
+
+        _saveWatchHistory();
+        if (!mounted) return;
+        Navigator.of(context).pop({
+          'nextSeason': nextSeason,
+          'nextEpisode': nextEpisode,
+        });
+      } catch (e) {
+        debugPrint('[NextEp] Streaming-mode handoff failed: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Next episode failed: $e')),
@@ -3202,6 +3299,9 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
                 ),
 
                 // ── Custom subtitle overlay ──────────────────────────────
+                // Auto-scales relative to the rendered window height so
+                // the text stays readable in normal mode, fullscreen, AND
+                // shrinks proportionally when in PiP (480x270).
                 StreamBuilder<List<String>>(
                   stream: _player.stream.subtitle,
                   initialData: _player.state.subtitle,
@@ -3209,13 +3309,23 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
                     final lines = snap.data ?? [];
                     final text = lines.where((l) => l.trim().isNotEmpty).join('\n');
                     if (text.isEmpty) return const SizedBox.shrink();
+                    // Reference height = 720p (typical desktop tier).
+                    // Anything smaller scales down linearly; bigger
+                    // windows keep the user's chosen size.
+                    // Use MediaQuery (not LayoutBuilder) because Positioned
+                    // requires a direct Stack ancestor as its parent.
+                    const refHeight = 720.0;
+                    final winH = MediaQuery.of(context).size.height;
+                    final scale = (winH / refHeight).clamp(0.35, 1.0);
+                    final hSidePad = 24.0 * scale;
                     return Positioned(
-                      left: 24, right: 24,
-                      bottom: _subtitleBottomPadding,
+                      left: hSidePad,
+                      right: hSidePad,
+                      bottom: _subtitleBottomPadding * scale,
                       child: IgnorePointer(
                         child: Text(
                           text,
-                          style: _buildSubtitleTextStyle(),
+                          style: _buildSubtitleTextStyle(scale: scale),
                           textAlign: TextAlign.center,
                         ),
                       ),
@@ -3224,14 +3334,20 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
                 ),
 
                 // ── Controls Overlay ─────────────────────────────────────
-                AnimatedOpacity(
-                  opacity: _showControls ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 220),
-                  child: IgnorePointer(
-                    ignoring: !_showControls,
-                    child: _buildControlsOverlay(),
+                // Hidden entirely while PiP is active — replaced by the
+                // floating revert button below.
+                if (!_isPipMode)
+                  AnimatedOpacity(
+                    opacity: _showControls ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 220),
+                    child: IgnorePointer(
+                      ignoring: !_showControls,
+                      child: _buildControlsOverlay(),
+                    ),
                   ),
-                ),
+
+                // ── PiP revert button (hover-only) ───────────────────────
+                if (_isPipMode) _buildPipRevertOverlay(),
 
                 // ── Embedded Error Overlay ───────────────────────────────
                 if (_hasError) _buildEmbeddedError(),
@@ -3239,6 +3355,71 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
             ),
           ),
         ),
+    );
+  }
+
+  /// Floating revert button shown only while desktop PiP is active.
+  /// Transparent hover region across the whole window; the button itself
+  /// fades in only when the cursor is over the PiP, so the picture stays
+  /// clean otherwise. Click exits PiP and restores the window chrome.
+  Widget _buildPipRevertOverlay() {
+    return MouseRegion(
+      opaque: false,
+      onEnter: (_) {
+        if (mounted && !_pipHover) setState(() => _pipHover = true);
+      },
+      onExit: (_) {
+        if (mounted && _pipHover) setState(() => _pipHover = false);
+      },
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Full-window drag handle so the user can click+drag the
+          // frameless PiP window around the desktop. DragToMoveArea
+          // listens for primary-button drags and forwards them to the
+          // OS via window_manager.
+          const Positioned.fill(
+            child: DragToMoveArea(child: SizedBox.expand()),
+          ),
+          Positioned(
+            top: 8,
+            right: 8,
+            child: AnimatedOpacity(
+              opacity: _pipHover ? 1.0 : 0.0,
+              duration: const Duration(milliseconds: 180),
+              child: IgnorePointer(
+                ignoring: !_pipHover,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () async {
+                      await PipService.instance.leave();
+                    },
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.18),
+                          width: 0.8,
+                        ),
+                      ),
+                      child: const Icon(
+                        Icons.picture_in_picture_alt_rounded,
+                        color: Colors.white,
+                        size: 18,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -3587,6 +3768,16 @@ class _DesktopPlayerScreenState extends State<DesktopPlayerScreen>
                   GlassPillButton(
                     text: _videoFitLabel,
                     onTap: _cycleAspectRatio,
+                  ),
+                  const SizedBox(width: 8),
+                  GlassIconButton(
+                    icon: PipService.instance.isDesktopActive
+                        ? Icons.picture_in_picture_alt_rounded
+                        : Icons.picture_in_picture_rounded,
+                    onPressed: () async {
+                      await PipService.instance.toggle();
+                      if (mounted) setState(() {});
+                    },
                   ),
                   const SizedBox(width: 8),
                   GlassIconButton(

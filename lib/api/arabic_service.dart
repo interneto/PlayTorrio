@@ -7,7 +7,103 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'local_server_service.dart';
 import 'stream_extractor.dart';
 
-const String _baseUrl = 'https://larozaa.bond';
+// ── Dynamic base URL ───────────────────────────────────────────────────────
+//
+// Larozaa rotates its real host (currently `larozaa.homes`, previously
+// `larozaa.com` etc.) and uses `https://larozaa.bond` purely as a stable
+// bootstrap that 30x-redirects to whatever the active host is today.
+//
+// On startup we hit the bootstrap, follow redirects, and cache the
+// scheme+host of the final URL in SharedPreferences. Subsequent runs use
+// the cached value immediately and re-resolve in the background so the
+// next session picks up any new host change.
+const String _bootstrapUrl = 'https://larozaa.bond';
+const String _baseUrlPrefsKey = 'larozaa_base_url_v1';
+const Duration _baseUrlMaxAge = Duration(hours: 12);
+
+String _baseUrl = 'https://larozaa.bond'; // mutated after _ensureBase()
+Future<void>? _baseUrlInitFuture;
+DateTime? _baseUrlResolvedAt;
+
+Future<void> _ensureBase() {
+  return _baseUrlInitFuture ??= _initBaseUrl();
+}
+
+Future<void> _initBaseUrl() async {
+  // 1) Fast path: load whatever was cached last run, use it immediately.
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final cached = prefs.getString(_baseUrlPrefsKey);
+    if (cached != null && cached.startsWith('http')) {
+      _baseUrl = cached;
+      debugPrint('[ArabicService] base from cache: $_baseUrl');
+    }
+  } catch (_) {}
+
+  // 2) Refresh from the bootstrap (always — cheap, single HEAD-ish GET).
+  await _refreshBaseUrl();
+}
+
+Future<void> _refreshBaseUrl() async {
+  // Try a chain of bootstrap URLs. The official one is `larozaa.bond` but
+  // we also keep a couple of last-known mirrors so a dead bootstrap doesn't
+  // strand the user. The first response that lands on a host containing
+  // "laroza" wins.
+  const bootstraps = <String>[
+    _bootstrapUrl,
+    'https://larozaa.home',
+    'https://larozaa.homes',
+    'https://larozaa.com',
+  ];
+  for (final boot in bootstraps) {
+    try {
+      final req = http.Request('GET', Uri.parse(boot))
+        ..followRedirects = true
+        ..maxRedirects = 15
+        ..headers['User-Agent'] =
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+      final streamed = await http.Client().send(req).timeout(
+            const Duration(seconds: 10),
+          );
+      // Drain (we only care about the final URL).
+      await streamed.stream.drain<void>();
+      final finalUri = streamed.request?.url ?? Uri.parse(boot);
+      final resolved = '${finalUri.scheme}://${finalUri.host}';
+      // Sanity check: must look like a real laroza host.
+      if (!resolved.startsWith('http') ||
+          !finalUri.host.toLowerCase().contains('laroza')) {
+        debugPrint('[ArabicService] bootstrap $boot did not resolve to a laroza host '
+            '(got $resolved) — trying next');
+        continue;
+      }
+      if (resolved != _baseUrl) {
+        _baseUrl = resolved;
+        debugPrint('[ArabicService] base resolved via $boot -> $_baseUrl');
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_baseUrlPrefsKey, resolved);
+        } catch (_) {}
+      } else {
+        debugPrint('[ArabicService] base unchanged: $_baseUrl');
+      }
+      _baseUrlResolvedAt = DateTime.now();
+      return;
+    } catch (e) {
+      debugPrint('[ArabicService] bootstrap $boot failed: $e');
+      // try next
+    }
+  }
+  debugPrint('[ArabicService] all bootstraps failed; keeping $_baseUrl');
+}
+
+/// Re-resolve the live host if the cached value is older than [_baseUrlMaxAge].
+/// Fire-and-forget; never blocks the caller.
+void _maybeBackgroundRefresh() {
+  final last = _baseUrlResolvedAt;
+  if (last != null && DateTime.now().difference(last) < _baseUrlMaxAge) return;
+  _refreshBaseUrl(); // unawaited
+}
 
 // ── Models ──────────────────────────────────────────────────────────────────
 
@@ -133,17 +229,58 @@ class ArabicService {
       };
 
   Future<String> _fetchHtml(String url) async {
-    final response = await _client.get(Uri.parse(url), headers: _headers);
-    if (response.statusCode != 200) {
-      throw Exception('HTTP ${response.statusCode} for $url');
+    return _fetchHtmlImpl(url, allowReresolve: true);
+  }
+
+  Future<String> _fetchHtmlImpl(String url, {required bool allowReresolve}) async {
+    try {
+      final req = http.Request('GET', Uri.parse(url))
+        ..followRedirects = true
+        ..maxRedirects = 15
+        ..headers.addAll(_headers);
+      final streamed = await _client.send(req).timeout(const Duration(seconds: 20));
+      final body = await streamed.stream.bytesToString();
+      if (streamed.statusCode != 200) {
+        throw Exception('HTTP ${streamed.statusCode} for $url');
+      }
+      // If the request ended on a different origin than _baseUrl, the
+      // host has rotated — adopt the new origin and persist it so the
+      // next call goes there directly.
+      final finalUri = streamed.request?.url;
+      if (finalUri != null) {
+        final newOrigin = '${finalUri.scheme}://${finalUri.host}';
+        if (newOrigin != _baseUrl) {
+          _baseUrl = newOrigin;
+          debugPrint('[ArabicService] base auto-updated from response: $_baseUrl');
+          try {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString(_baseUrlPrefsKey, newOrigin);
+          } catch (_) {}
+          _baseUrlResolvedAt = DateTime.now();
+        }
+      }
+      return body;
+    } catch (e) {
+      // Redirect-loop / dead-host / timeout → re-resolve from the bootstrap
+      // and retry the request once on the freshly-resolved origin.
+      if (allowReresolve) {
+        debugPrint('[ArabicService] fetch failed ($e) — re-resolving base from bootstrap');
+        await _refreshBaseUrl();
+        // Rewrite the URL onto the new base if the path part survives.
+        final old = Uri.parse(url);
+        final retryUrl = '$_baseUrl${old.path}${old.hasQuery ? '?${old.query}' : ''}';
+        return _fetchHtmlImpl(retryUrl, allowReresolve: false);
+      }
+      rethrow;
     }
-    return response.body;
   }
 
   // ── Browse ──────────────────────────────────────────────────────────
 
   /// Browse latest series (default landing page).
   Future<List<ArabicShow>> browse({int page = 1}) async {
+    await _ensureBase();
+    _maybeBackgroundRefresh();
     try {
       final url = '$_baseUrl/moslslat4.php?&page=$page';
       debugPrint('[ArabicService] Browse page $page: $url');
@@ -157,6 +294,7 @@ class ArabicService {
 
   /// Browse by category.
   Future<List<ArabicShow>> browseCategory(String catSlug, {int page = 1}) async {
+    await _ensureBase();
     try {
       final url = '$_baseUrl/category.php?cat=$catSlug&page=$page&order=DESC';
       debugPrint('[ArabicService] Category $catSlug page $page');
@@ -175,6 +313,7 @@ class ArabicService {
   // ── Search ──────────────────────────────────────────────────────────
 
   Future<List<ArabicShow>> search(String query, {int page = 1}) async {
+    await _ensureBase();
     try {
       final encoded = Uri.encodeComponent(query);
       final url = '$_baseUrl/search.php?keywords=$encoded&page=$page';
@@ -253,6 +392,7 @@ class ArabicService {
   // ── Show details (series with seasons & episodes) ───────────────────
 
   Future<ArabicShowDetail> getShowDetails(String showId) async {
+    await _ensureBase();
     try {
       var resolvedId = showId;
       if (resolvedId.startsWith('ep:')) {
@@ -281,6 +421,7 @@ class ArabicService {
   // ── Servers for a video ──────────────────────────────────────────────
 
   Future<List<ArabicServer>> getServers(String videoId) async {
+    await _ensureBase();
     try {
       final url = '$_baseUrl/play.php?vid=$videoId';
       debugPrint('[ArabicService] Getting servers for: $videoId');

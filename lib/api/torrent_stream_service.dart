@@ -98,17 +98,14 @@ class TorrentStreamService {
         pollInterval: const Duration(milliseconds: 200),
       );
 
-      // Apply streaming-tuned session config. Mirrors the libtorrent_flutter
-      // example app defaults: low per-torrent connection limit so that a
-      // few slow peers can't head-of-line-block the streaming reader on
-      // high-seed swarms (TorrServer's well-known default), responsive
-      // mode on for low-latency piece picking, encryption optional. The
-      // connections limit is user-configurable (default 5).
+
       try {
         final engine = LibtorrentFlutter.instance;
         final connLimit = await _settings.getTorrentConnectionsLimit();
+        const tunedCacheBytes = 256 * 1024 * 1024; // 256MB session cache
         engine.configureSession(engine.getDefaultConfig().copyWith(
           connectionsLimit: connLimit,
+          cacheSize: tunedCacheBytes,
           responsiveMode: true,
           readerReadAhead: 95,
           preloadCache: 50,
@@ -118,7 +115,7 @@ class TorrentStreamService {
           downloadRateLimit: 0,
           uploadRateLimit: 0,
         ));
-        _log('Session configured: conns=$connLimit, responsive=true');
+        _log('Session configured: conns=$connLimit, cache=256MB, responsive=true');
       } catch (e) {
         _log('configureSession failed (non-fatal): $e');
       }
@@ -148,6 +145,7 @@ class TorrentStreamService {
       final engine = LibtorrentFlutter.instance;
       engine.configureSession(engine.getDefaultConfig().copyWith(
         connectionsLimit: clamped,
+        cacheSize: 256 * 1024 * 1024,
         responsiveMode: true,
         readerReadAhead: 95,
         preloadCache: 50,
@@ -157,7 +155,7 @@ class TorrentStreamService {
         downloadRateLimit: 0,
         uploadRateLimit: 0,
       ));
-      _log('Connections limit updated: $clamped');
+      _log('Connections limit updated: $clamped (cache=256MB)');
     } catch (e) {
       _log('applyConnectionsLimit failed: $e');
     }
@@ -241,6 +239,16 @@ class TorrentStreamService {
 
       if (hash != null) {
         _activeStreams[hash] = streamInfo.id;
+      }
+
+      // Aggressively prefetch the head of the stream so the player gets
+      // first bytes ASAP — mirrors Stremio's startup behaviour.
+      try {
+        const preloadBytes = 32 * 1024 * 1024; // 32MB head prefetch
+        LibtorrentFlutter.instance.preloadStream(streamInfo.id, preloadBytes: preloadBytes);
+        _log('preloadStream queued: ${preloadBytes ~/ (1024 * 1024)}MB');
+      } catch (e) {
+        _log('preloadStream failed (non-fatal): $e');
       }
 
       _log('Stream started: ${streamInfo.url}');

@@ -45,6 +45,7 @@ import '../../utils/hls_master_parser.dart';
 import '../player_screen.dart';
 import 'utils.dart';
 import 'menus.dart';
+import '../../services/pip_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  GLASS PRIMITIVES  (mobile — press feedback only, no hover)
@@ -461,7 +462,11 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
   StreamSubscription<String>? _errorSub;
   StreamSubscription<bool>? _completedSub;
   StreamSubscription<Tracks>? _tracksSub;
+  StreamSubscription<bool>? _pipSub;
   bool _autoTracksAppliedForSource = false;
+
+  // ── PiP State ─────────────────────────────────────────────────────────────
+  bool _isPipMode = false;
 
   // ── Value Notifiers ───────────────────────────────────────────────────────
   final ValueNotifier<Duration> _positionNotifier =
@@ -556,6 +561,26 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
 
     // ── Lifecycle Observer ───────────────────────────────────────────────
     WidgetsBinding.instance.addObserver(this);
+
+    // ── PiP status listener (Android system PiP) ─────────────────────────
+    // When entering PiP we hide all UI and force-resume playback if
+    // currently paused. When leaving PiP we show controls again.
+    _pipSub = PipService.instance.androidPipChanges.listen((inPip) {
+      if (_disposed || !mounted) return;
+      setState(() {
+        _isPipMode = inPip;
+        if (inPip) {
+          _showControls = false;
+          _hideTimer?.cancel();
+        }
+      });
+      if (inPip) {
+        // Auto-resume if paused so PiP isn't a static frame.
+        if (!_player.state.playing) {
+          _player.play();
+        }
+      }
+    });
 
     // ── System UI ────────────────────────────────────────────────────────
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -689,6 +714,7 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
     _errorSub?.cancel();
     _completedSub?.cancel();
     _tracksSub?.cancel();
+    _pipSub?.cancel();
 
     _positionNotifier.dispose();
     _durationNotifier.dispose();
@@ -1280,6 +1306,24 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
       // Ignore non-fatal audio errors (video continues playing)
       if (err.contains('Error decoding audio') ||
           err.contains('Failed to initialize a decoder for codec')) {
+        return;
+      }
+
+      // Ignore subtitle-fetch errors (HTTP 502/404 from sub providers,
+      // bad SRT, codec issues, etc.). These should NOT kill video
+      // playback or rotate the video fallback chain.
+      final lower = err.toLowerCase();
+      final isSubError = lower.contains('subtitle') ||
+          lower.contains('sub-add') ||
+          lower.contains('external file') ||
+          lower.contains('.srt') ||
+          lower.contains('.vtt') ||
+          lower.contains('.ass') ||
+          lower.contains('.ssa') ||
+          lower.contains('502') ||
+          lower.contains('http error');
+      if (isSubError) {
+        debugPrint('🟡 [MobilePlayer] sub error (ignored): $err');
         return;
       }
       
@@ -2272,17 +2316,17 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
     }
   }
 
-  TextStyle _buildSubtitleTextStyle() {
+  TextStyle _buildSubtitleTextStyle({double scale = 1.0}) {
     final base = TextStyle(
       height: 1.4,
-      fontSize: _subtitleSize,
+      fontSize: _subtitleSize * scale,
       letterSpacing: 0.0,
       wordSpacing: 0.0,
       color: _subtitleColor,
       fontWeight: _subtitleBold ? FontWeight.bold : FontWeight.normal,
       backgroundColor: Colors.black.withValues(alpha: _subtitleBgOpacity),
-      shadows: const [
-        Shadow(blurRadius: 10, color: Colors.black, offset: Offset.zero),
+      shadows: [
+        Shadow(blurRadius: 10 * scale, color: Colors.black, offset: Offset.zero),
       ],
     );
     if (_subtitleFont == 'Default') return base;
@@ -3030,6 +3074,70 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
       return;
     }
 
+    // ── Streaming-mode shortcut ─────────────────────────────────────────
+    // When launched from streaming_details_screen (= a `providers` map
+    // was passed), don't try to re-resolve the source here. Instead,
+    // pop back with {nextSeason, nextEpisode} so streaming_details can
+    // re-run the full provider fallback chain — same path the user
+    // gets when tapping an episode card manually. This avoids the
+    // "Provider X does not support TV" failures when the active
+    // provider lacks a `tv` entry but other providers in the chain
+    // would have worked.
+    final isStreamingMode = widget.providers != null &&
+        widget.providers!.isNotEmpty &&
+        widget.movie != null &&
+        widget.movie!.mediaType == 'tv' &&
+        widget.selectedSeason != null &&
+        widget.selectedEpisode != null;
+    if (isStreamingMode) {
+      try {
+        final tmdb = TmdbService();
+        final tvId = widget.movie!.id;
+        int nextSeason = widget.selectedSeason!;
+        int nextEpisode = widget.selectedEpisode! + 1;
+
+        final seasonData = await tmdb.getTvSeasonDetails(tvId, nextSeason);
+        final episodes = seasonData['episodes'] as List<dynamic>? ?? [];
+        final maxEp = episodes.isNotEmpty
+            ? episodes
+                .map((e) => e['episode_number'] as int)
+                .reduce((a, b) => a > b ? a : b)
+            : 0;
+
+        if (nextEpisode > maxEp) {
+          final totalSeasons = await tmdb.getTvSeasonCount(tvId);
+          if (nextSeason < totalSeasons) {
+            nextSeason++;
+            nextEpisode = 1;
+          } else {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('No more episodes available')),
+              );
+              setState(() => _isLoadingNextEp = false);
+            }
+            return;
+          }
+        }
+
+        _saveWatchHistory();
+        if (!mounted) return;
+        Navigator.of(context).pop({
+          'nextSeason': nextSeason,
+          'nextEpisode': nextEpisode,
+        });
+      } catch (e) {
+        debugPrint('[NextEp] Streaming-mode handoff failed: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Next episode failed: $e')),
+          );
+          setState(() => _isLoadingNextEp = false);
+        }
+      }
+      return;
+    }
+
     try {
       final tmdb = TmdbService();
       final tvId = widget.movie!.id;
@@ -3356,6 +3464,8 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
               ),
 
               // ── 1b. Custom subtitle overlay ─────────────────────────────
+              // Auto-scales relative to the rendered window height so
+              // it shrinks proportionally when in PiP.
               StreamBuilder<List<String>>(
                 stream: _player.stream.subtitle,
                 initialData: _player.state.subtitle,
@@ -3363,13 +3473,20 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
                   final lines = snap.data ?? [];
                   final text = lines.where((l) => l.trim().isNotEmpty).join('\n');
                   if (text.isEmpty) return const SizedBox.shrink();
+                  // Reference height = 720p. PiP windows are ~108px tall
+                  // so scale clamps to a readable minimum.
+                  const refHeight = 720.0;
+                  final winH = MediaQuery.of(context).size.height;
+                  final scale = (winH / refHeight).clamp(0.35, 1.0);
+                  final hSidePad = 24.0 * scale;
                   return Positioned(
-                    left: 24, right: 24,
-                    bottom: _subtitleBottomPadding,
+                    left: hSidePad,
+                    right: hSidePad,
+                    bottom: _subtitleBottomPadding * scale,
                     child: IgnorePointer(
                       child: Text(
                         text,
-                        style: _buildSubtitleTextStyle(),
+                        style: _buildSubtitleTextStyle(scale: scale),
                         textAlign: TextAlign.center,
                       ),
                     ),
@@ -3438,11 +3555,13 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
                 ),
 
               // ── 4. Controls overlay ───────────────────────────────────────
+              // Hidden entirely while Android system PiP is active so the
+              // floating window shows only the video frame.
               AnimatedOpacity(
-                opacity: (_showControls && !_isLocked) ? 1.0 : 0.0,
+                opacity: (_showControls && !_isLocked && !_isPipMode) ? 1.0 : 0.0,
                 duration: const Duration(milliseconds: 200),
                 child: IgnorePointer(
-                  ignoring: !(_showControls && !_isLocked),
+                  ignoring: !(_showControls && !_isLocked) || _isPipMode,
                   child: _buildControlsOverlay(),
                 ),
               ),
@@ -3689,6 +3808,14 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen>
               _GlassIconButton(
                 icon: Icons.subtitles_outlined,
                 onPressed: _showSubtitlesMenu,
+                size: btnSize, iconSize: iconSz,
+              ),
+              SizedBox(width: gap),
+              _GlassIconButton(
+                icon: Icons.picture_in_picture_alt_outlined,
+                onPressed: () async {
+                  await PipService.instance.enter();
+                },
                 size: btnSize, iconSize: iconSz,
               ),
               // Quality selector — only when the playing stream is a master

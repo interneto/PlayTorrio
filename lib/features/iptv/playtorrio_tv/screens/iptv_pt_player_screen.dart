@@ -86,6 +86,14 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
   late VideoController _controller;
 
   StreamSubscription? _posSub, _playingSub, _bufferingSub, _errorSub, _logSub;
+  StreamSubscription? _durSub;
+
+  // VOD seekbar state — duration is 0 for live streams, > 0 for VOD.
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  bool _isSeeking = false;
+  double _seekPreview = 0.0;
+  bool get _isVod => _duration.inSeconds > 1;
 
   int _sourceIdx = 0;
   bool _playing = false;
@@ -278,6 +286,14 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
   void _bind() {
     _posSub = _player.stream.position.listen((pos) {
       if (!mounted) return;
+      if (!_isSeeking && pos != _position) {
+        // Don't pump setState on every tick if duration is 0 (pure live).
+        if (_isVod) {
+          setState(() => _position = pos);
+        } else {
+          _position = pos;
+        }
+      }
       if (pos != _lastPos) {
         _lastPos = pos;
         _lastPosChange = DateTime.now();
@@ -289,6 +305,10 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
           // we'll evaluate streak in watchdog
         }
       }
+    });
+    _durSub = _player.stream.duration.listen((dur) {
+      if (!mounted) return;
+      if (dur != _duration) setState(() => _duration = dur);
     });
     _playingSub = _player.stream.playing.listen((p) {
       if (!mounted) return;
@@ -666,6 +686,7 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
 
   Future<void> _disposePlayer() async {
     await _posSub?.cancel();
+    await _durSub?.cancel();
     await _playingSub?.cancel();
     await _bufferingSub?.cancel();
     await _errorSub?.cancel();
@@ -821,6 +842,7 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
           children: [
             _buildTopBar(compact),
             const Spacer(),
+            if (_isVod) _buildSeekbar(compact),
             _buildBottomBar(compact),
           ],
         ),
@@ -889,6 +911,114 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
         ],
       ),
     );
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  //  VOD SEEKBAR — only shown when duration > 0 (Xtream movies / series)
+  // ───────────────────────────────────────────────────────────────────────
+  Widget _buildSeekbar(bool compact) {
+    final totalMs = _duration.inMilliseconds.toDouble();
+    if (totalMs <= 0) return const SizedBox.shrink();
+    final currentMs = _isSeeking
+        ? _seekPreview
+        : _position.inMilliseconds.toDouble().clamp(0.0, totalMs);
+    final shownPos = Duration(milliseconds: currentMs.toInt());
+
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 16 : 24,
+        vertical: compact ? 2 : 4,
+      ),
+      child: Row(
+        children: [
+          // Current time
+          SizedBox(
+            width: compact ? 56 : 64,
+            child: Text(
+              _fmtDur(shownPos),
+              style: GoogleFonts.spaceMono(
+                color: Colors.white,
+                fontSize: compact ? 12 : 13,
+                fontFeatures: const [FontFeature.tabularFigures()],
+                shadows: const [
+                  Shadow(blurRadius: 6, color: Colors.black87),
+                ],
+              ),
+            ),
+          ),
+          // Slider
+          Expanded(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                activeTrackColor: const Color(0xFF00E5FF),
+                inactiveTrackColor: Colors.white.withValues(alpha: 0.18),
+                thumbColor: Colors.white,
+                overlayColor: const Color(0x3300E5FF),
+                trackHeight: 3.5,
+                thumbShape: const RoundSliderThumbShape(
+                  enabledThumbRadius: 7,
+                  elevation: 3,
+                ),
+                overlayShape:
+                    const RoundSliderOverlayShape(overlayRadius: 16),
+                trackShape: const RoundedRectSliderTrackShape(),
+              ),
+              child: Slider(
+                value: currentMs.clamp(0.0, totalMs),
+                min: 0,
+                max: totalMs,
+                onChangeStart: (v) {
+                  setState(() {
+                    _isSeeking = true;
+                    _seekPreview = v;
+                  });
+                  _hideControlsTimer?.cancel();
+                },
+                onChanged: (v) {
+                  setState(() => _seekPreview = v);
+                },
+                onChangeEnd: (v) async {
+                  final target = Duration(milliseconds: v.toInt());
+                  setState(() {
+                    _isSeeking = false;
+                    _position = target;
+                  });
+                  try {
+                    await _player.seek(target);
+                  } catch (_) {}
+                  _scheduleHideControls();
+                },
+              ),
+            ),
+          ),
+          // Total time
+          SizedBox(
+            width: compact ? 56 : 64,
+            child: Text(
+              _fmtDur(_duration),
+              textAlign: TextAlign.right,
+              style: GoogleFonts.spaceMono(
+                color: Colors.white70,
+                fontSize: compact ? 12 : 13,
+                fontFeatures: const [FontFeature.tabularFigures()],
+                shadows: const [
+                  Shadow(blurRadius: 6, color: Colors.black87),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _fmtDur(Duration d) {
+    final s = d.inSeconds.abs();
+    final h = s ~/ 3600;
+    final m = (s % 3600) ~/ 60;
+    final sec = s % 60;
+    final two = (int n) => n.toString().padLeft(2, '0');
+    return h > 0 ? '$h:${two(m)}:${two(sec)}' : '${two(m)}:${two(sec)}';
   }
 
   Widget _buildBottomBar(bool compact) {

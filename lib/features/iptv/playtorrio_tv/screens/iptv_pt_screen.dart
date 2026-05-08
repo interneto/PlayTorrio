@@ -5,6 +5,7 @@ import '../controller/iptv_controller.dart';
 import '../data/hardcoded_channels.dart';
 import '../data/iptv_network.dart';
 import '../data/models.dart';
+import '../m3u/m3u_playlists_screen.dart';
 import 'iptv_pt_player_screen.dart';
 
 /// Mask a URL for safe display: keeps host, masks each path segment to first 2 chars + ***.
@@ -324,6 +325,16 @@ class _PortalListView extends StatelessWidget {
                 ? '${ctrl.verified.length} verified'
                 : ctrl.statusText,
             actions: [
+              IconButton(
+                tooltip: 'M3U Playlists',
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const M3uPlaylistsScreen(),
+                  ),
+                ),
+                icon: const Icon(Icons.playlist_play_rounded,
+                    color: Color(0xFF00E5FF)),
+              ),
               IconButton(
                 tooltip: 'Add portal',
                 onPressed: () => _showAddDialog(context),
