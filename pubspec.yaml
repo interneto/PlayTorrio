@@ -35,7 +35,7 @@ dependencies:
   android_intent_plus: ^5.1.0
   flutter_secure_storage: ^9.2.4
   permission_handler: ^11.3.1
-  connectivity_plus: ^7.0.0
+  connectivity_plus: 7.0.0
   screen_brightness: ^2.1.7
   volume_controller: ^3.4.1
   wakelock_plus: ^1.4.0
