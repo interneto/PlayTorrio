@@ -200,11 +200,13 @@ class LocalServerService {
     debugPrint('[ComicProxy] Fetching: $targetUrl');
 
     // Pick the Referer per source so each origin's hotlink check passes.
-    String referer = 'https://readcomiconline.li/';
+    String referer = 'https://rcostation.xyz/';
     try {
       final host = Uri.parse(targetUrl).host;
       if (host.contains('readcomicsonline.ru')) {
         referer = 'https://readcomicsonline.ru/';
+      } else if (host.contains('readcomiconline.li')) {
+        referer = 'https://readcomiconline.li/';
       }
     } catch (_) {}
 

@@ -15,7 +15,7 @@ class Comic {
   final String publication;
   final String summary;
   /// Source tag identifying which scraper produced this comic.
-  /// '' or 'rco' = readcomiconline.li (default), 'rcoru' = readcomicsonline.ru.
+  /// '' or 'rco' = rcostation.xyz (default), 'rcoru' = readcomicsonline.ru.
   final String source;
 
   Comic({
@@ -84,7 +84,7 @@ class ComicDetails {
 }
 
 class ComicsService {
-  static const String _baseUrl = 'https://readcomiconline.li';
+  static const String _baseUrl = 'https://rcostation.xyz';
   static const String _likedKey = 'liked_comics';
 
   Future<List<Comic>> getComics({int page = 1}) async {

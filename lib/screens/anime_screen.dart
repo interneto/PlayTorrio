@@ -28,6 +28,7 @@ class _AnimeScreenState extends State<AnimeScreen>
     with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   final AnimeService _service = AnimeService();
   final PageController _heroController = PageController();
+  final ScrollController _cwScrollController = ScrollController();
   final ScrollController _scroll = ScrollController();
 
   Timer? _heroTimer;
@@ -96,6 +97,7 @@ class _AnimeScreenState extends State<AnimeScreen>
     AnimeService.watchHistoryRevision.removeListener(_onHistoryChanged);
     _heroTimer?.cancel();
     _heroController.dispose();
+    _cwScrollController.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -804,6 +806,38 @@ class _AnimeScreenState extends State<AnimeScreen>
   }
 
   // ─── Continue watching ─────────────────────────────────────────
+  void _cwScrollLeft() {
+    if (_cwScrollController.hasClients) {
+      _cwScrollController.animateTo(
+        (_cwScrollController.offset - 400).clamp(0.0, _cwScrollController.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  void _cwScrollRight() {
+    if (_cwScrollController.hasClients) {
+      _cwScrollController.animateTo(
+        (_cwScrollController.offset + 400).clamp(0.0, _cwScrollController.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  Widget _cwArrowButton(IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(7),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Icon(icon, color: Colors.white.withValues(alpha: 0.6), size: 14),
+    );
+  }
+
   Widget _buildContinueWatching() {
     final w = MediaQuery.of(context).size.width;
     // Card width scales: phone 200, tablet 240, desktop 280.
@@ -813,15 +847,69 @@ class _AnimeScreenState extends State<AnimeScreen>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionHeader(
-          'Continue Watching',
-          Icons.history_rounded,
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 32, 24, 16),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: AppTheme.primaryColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.history_rounded,
+                    color: AppTheme.primaryColor, size: 18),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Continue Watching',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Container(
+                      height: 2.5,
+                      width: 36,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(2),
+                        gradient: LinearGradient(
+                          colors: [
+                            AppTheme.primaryColor,
+                            AppTheme.primaryColor.withValues(alpha: 0.0),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              GestureDetector(
+                onTap: _cwScrollLeft,
+                child: _cwArrowButton(Icons.arrow_back_ios_new_rounded),
+              ),
+              const SizedBox(width: 6),
+              GestureDetector(
+                onTap: _cwScrollRight,
+                child: _cwArrowButton(Icons.arrow_forward_ios_rounded),
+              ),
+            ],
+          ),
         ),
         SizedBox(
           height: cardH,
           child: ListView.separated(
+            controller: _cwScrollController,
             scrollDirection: Axis.horizontal,
             physics: const BouncingScrollPhysics(),
+            clipBehavior: Clip.none,
             padding: EdgeInsets.symmetric(horizontal: hPad),
             itemCount: _continueWatching.length,
             separatorBuilder: (_, _) => const SizedBox(width: 14),
