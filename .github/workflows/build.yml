@@ -73,6 +73,21 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libfuse2
 
+      - name: Generate Linux platform files
+        run: |
+          flutter create --platforms=linux .
+
+          # Fix binary name & window title
+          sed -i 's/set(BINARY_NAME "play_torrio_native")/set(BINARY_NAME "PlayTorrio")/' \
+            linux/CMakeLists.txt
+          sed -i 's/set(APPLICATION_ID "com.example.play_torrio_native")/set(APPLICATION_ID "com.playtorrio.app")/' \
+            linux/CMakeLists.txt
+          
+          # Fix application name in my_application.cc if it exists
+          if [ -f "linux/my_application.cc" ]; then
+            sed -i 's/play_torrio_native/PlayTorrio/g' linux/my_application.cc
+          fi
+
       - run: flutter pub get
       - run: >
           flutter build linux --release
