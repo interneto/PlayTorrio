@@ -30,12 +30,23 @@ jobs:
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
 
-      - name: Setup CMake (Downgrade to 3.29.3 to avoid symlink extraction issue)
-        uses: jwlawson/actions-setup-cmake@v2.0
-        with:
-          cmake-version: '3.29.3'
-
       - run: flutter pub get
+      - name: Pre-extract libtorrent_flutter native lib (workaround CMake symlink bug)
+        shell: pwsh
+        run: |
+          $pubCache = "$env:LOCALAPPDATA\Pub\Cache\hosted\pub.dev"
+          $pkgPath = Get-ChildItem -Path $pubCache -Filter "libtorrent_flutter-*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($pkgPath) {
+            $version = ($pkgPath.Name -split '-')[1]
+            $url = "https://github.com/ayman708-UX/libtorrent_flutter/releases/download/v$version/windows-native-lib-x64.zip"
+            $zipPath = "$env:TEMP\libtorrent.zip"
+            Invoke-WebRequest -Uri $url -OutFile $zipPath
+            
+            $prebuiltDir = "$($pkgPath.FullName)\prebuilt\windows"
+            New-Item -ItemType Directory -Force -Path $prebuiltDir
+            Expand-Archive -Path $zipPath -DestinationPath $prebuiltDir -Force
+            Write-Host "Pre-extracted libtorrent_flutter native lib to $prebuiltDir"
+          }
       - run: >
           flutter build windows --release
           --dart-define=TRAKT_CLIENT_ID=${{ secrets.TRAKT_CLIENT_ID }}
