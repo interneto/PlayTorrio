@@ -175,8 +175,15 @@ class Paper2AudioService {
     final token = await _getAuthToken();
     final uri = Uri.parse('$_baseUrl/v2/summarize').replace(queryParameters: {
       'fileName': fileName,
+      'link': '',
+      'client': 'web',
       'summarizationMethod': 'ultimate',
+      'context': '',
+      'sendEmailToUser': 'false',
+      'appendix': 'false',
       'primaryVoice': voiceId,
+      'secondaryVoice': 'am_echo',
+      'tertiaryVoice': 'af_alloy',
     });
 
     final resp = await http.post(

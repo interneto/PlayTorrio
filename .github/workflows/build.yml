@@ -128,8 +128,8 @@ jobs:
           EOF
           fi
 
-          # AppRun launcher
-          printf '#!/bin/bash\ncd "\$(dirname "\$0")"\nexec ./PlayTorrio "\$@"\n' \
+          # AppRun launcher — single-quoted format string keeps $0/$@ unexpanded
+          printf '#!/bin/sh\ncd "$(dirname "$0")"\nexec ./PlayTorrio "$@"\n' \
             > "$APP/AppRun"
           chmod +x "$APP/AppRun"
 
