@@ -12,8 +12,6 @@ class _Sport {
   final String id;
   final String name;
   const _Sport({required this.id, required this.name});
-  factory _Sport.fromJson(Map<String, dynamic> j) =>
-      _Sport(id: (j['id'] ?? '').toString(), name: (j['name'] ?? '').toString());
 }
 
 class _PpvStream {

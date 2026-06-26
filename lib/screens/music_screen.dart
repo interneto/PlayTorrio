@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shimmer/shimmer.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../api/music_service.dart';
 import '../api/music_player_service.dart';
 import '../api/music_storage_service.dart';
@@ -41,6 +42,7 @@ class _MusicScreenState extends State<MusicScreen> with WidgetsBindingObserver, 
   bool _isLoading = false;
   int _currentMusicOffset = 0;
   final int _musicLimit = 20;
+  String _downloadedSearchQuery = '';
 
   // Palette colors — derived from active theme
   Color get _accentGlow => AppTheme.current.primaryColor;
@@ -637,6 +639,15 @@ class _MusicScreenState extends State<MusicScreen> with WidgetsBindingObserver, 
     return ValueListenableBuilder<List<MusicTrack>>(
       valueListenable: _storageService.downloadedTracks,
       builder: (context, downloaded, _) {
+        final filtered = _downloadedSearchQuery.isEmpty
+            ? downloaded
+            : downloaded.where((t) {
+                final query = _downloadedSearchQuery.toLowerCase();
+                final titleMatch = t.title.toLowerCase().contains(query);
+                final artistMatch = t.artist.toLowerCase().contains(query);
+                return titleMatch || artistMatch;
+              }).toList();
+
         return Column(
           children: [
             _buildSectionHeader(
@@ -644,7 +655,12 @@ class _MusicScreenState extends State<MusicScreen> with WidgetsBindingObserver, 
               icon: Icons.download_done_rounded,
               iconColor: AppTheme.current.accentColor,
               subtitle: '${downloaded.length} songs',
-              onBack: () => setState(() => _currentView = MusicView.main),
+              onBack: () {
+                setState(() {
+                  _downloadedSearchQuery = '';
+                  _currentView = MusicView.main;
+                });
+              },
               actions: [
                 if (downloaded.isNotEmpty) ...[
                   _buildActionButton(Icons.shuffle_rounded, 'Shuffle', () {
@@ -656,14 +672,36 @@ class _MusicScreenState extends State<MusicScreen> with WidgetsBindingObserver, 
                 ],
               ],
             ),
+            if (downloaded.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                child: TextField(
+                  style: GoogleFonts.inter(color: Colors.white),
+                  onChanged: (val) => setState(() => _downloadedSearchQuery = val),
+                  decoration: InputDecoration(
+                    hintText: 'Search downloads...',
+                    hintStyle: GoogleFonts.inter(color: Colors.white38),
+                    prefixIcon: const Icon(Icons.search_rounded, color: Colors.white54),
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.05),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+              ),
             Expanded(
               child: downloaded.isEmpty
                   ? _buildEmptyState(Icons.cloud_download_outlined, 'No downloads yet', 'Downloaded songs play offline')
-                  : ListView.builder(
-                      padding: const EdgeInsets.only(bottom: 180),
-                      itemCount: downloaded.length,
-                      itemBuilder: (context, index) => _buildTrackTile(downloaded[index], downloaded, index: index),
-                    ),
+                  : filtered.isEmpty
+                      ? _buildEmptyState(Icons.search_off_rounded, 'No results', 'No downloaded songs match your search')
+                      : ListView.builder(
+                          padding: const EdgeInsets.only(bottom: 180),
+                          itemCount: filtered.length,
+                          itemBuilder: (context, index) => _buildTrackTile(filtered[index], filtered, index: index),
+                        ),
             ),
           ],
         );

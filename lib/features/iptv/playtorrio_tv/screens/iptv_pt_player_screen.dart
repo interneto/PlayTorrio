@@ -1017,7 +1017,7 @@ class _IptvPtPlayerScreenState extends State<IptvPtPlayerScreen>
     final h = s ~/ 3600;
     final m = (s % 3600) ~/ 60;
     final sec = s % 60;
-    final two = (int n) => n.toString().padLeft(2, '0');
+    String two(int n) => n.toString().padLeft(2, '0');
     return h > 0 ? '$h:${two(m)}:${two(sec)}' : '${two(m)}:${two(sec)}';
   }
 

@@ -444,7 +444,7 @@ class _M3uPlaylistsScreenState extends State<M3uPlaylistsScreen> {
     return ListView.separated(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       itemCount: _playlists.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      separatorBuilder: (context, index) => const SizedBox(height: 10),
       itemBuilder: (_, i) {
         final p = _playlists[i];
         return _PlaylistCard(
@@ -782,7 +782,7 @@ class _M3uChannelsScreenState extends State<M3uChannelsScreen> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 12, vertical: 8),
                         itemCount: list.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 6),
+                        separatorBuilder: (context, index) => const SizedBox(height: 6),
                         itemBuilder: (_, i) =>
                             _ChannelTile(channel: list[i], onTap: () => _play(list[i])),
                       ),
@@ -882,7 +882,7 @@ class _M3uChannelsScreenState extends State<M3uChannelsScreen> {
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 28),
                       itemCount: _groups.length + 1,
-                      separatorBuilder: (_, __) => const SizedBox(width: 6),
+                      separatorBuilder: (context, index) => const SizedBox(width: 6),
                       itemBuilder: (_, i) {
                         if (i == 0) {
                           return _GroupChip(
@@ -1111,7 +1111,7 @@ class _ChannelLogo extends StatelessWidget {
         width: 44,
         height: 44,
         fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => _placeholder(),
+        errorBuilder: (context, error, stackTrace) => _placeholder(),
         loadingBuilder: (ctx, child, prog) {
           if (prog == null) return child;
           return _placeholder();

@@ -30,7 +30,7 @@ class PipService {
   bool _desktopActive = false;
   Rect? _savedBounds;       // pre-PiP window bounds
   bool _savedAlwaysOnTop = false;
-  TitleBarStyle _savedTitleBarStyle = TitleBarStyle.normal;
+  final TitleBarStyle _savedTitleBarStyle = TitleBarStyle.normal;
 
   // Broadcasts desktop PiP on/off so the player UI can re-render.
   final StreamController<bool> _desktopController =

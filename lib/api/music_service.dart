@@ -112,7 +112,6 @@ class MusicAlbum {
 
 class MusicService {
   final _yt = YoutubeExplode();
-  static const String _proxyUrl = 'https://deezer-proxy.aymanisthedude1.workers.dev/?url=';
 
   // Caches for fast playback
   final Map<String, String> _videoIdCache = {};
@@ -142,9 +141,8 @@ class MusicService {
 
   Future<List<MusicTrack>> searchTracks(String query) => _withRetry(() async {
     final targetUri = Uri.https('api.deezer.com', '/search', {'q': query});
-    final proxiedUrl = '$_proxyUrl${Uri.encodeComponent(targetUri.toString())}';
     
-    final response = await http.get(Uri.parse(proxiedUrl));
+    final response = await http.get(targetUri);
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
       final items = data['data'] as List;
@@ -158,9 +156,8 @@ class MusicService {
       'index': index.toString(),
       'limit': limit.toString(),
     });
-    final proxiedUrl = '$_proxyUrl${Uri.encodeComponent(targetUri.toString())}';
     
-    final response = await http.get(Uri.parse(proxiedUrl));
+    final response = await http.get(targetUri);
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
       final items = data['data'] as List;
@@ -171,9 +168,8 @@ class MusicService {
 
   Future<List<MusicAlbum>> searchAlbums(String query) => _withRetry(() async {
     final targetUri = Uri.https('api.deezer.com', '/search/album', {'q': query});
-    final proxiedUrl = '$_proxyUrl${Uri.encodeComponent(targetUri.toString())}';
     
-    final response = await http.get(Uri.parse(proxiedUrl));
+    final response = await http.get(targetUri);
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
       final albums = data['data'] as List;
@@ -184,9 +180,8 @@ class MusicService {
 
   Future<List<MusicTrack>> getAlbumTracks(String albumId) => _withRetry(() async {
     final targetUrl = 'https://api.deezer.com/album/$albumId';
-    final proxiedUrl = '$_proxyUrl${Uri.encodeComponent(targetUrl)}';
     
-    final albumResponse = await http.get(Uri.parse(proxiedUrl));
+    final albumResponse = await http.get(Uri.parse(targetUrl));
     if (albumResponse.statusCode == 200) {
       final albumData = json.decode(albumResponse.body);
       final items = albumData['tracks']['data'] as List;
@@ -207,9 +202,8 @@ class MusicService {
 
   Future<List<MusicTrack>> getRelatedTracks(String trackId) => _withRetry(() async {
     final targetUrl = 'https://api.deezer.com/track/$trackId/related';
-    final proxiedUrl = '$_proxyUrl${Uri.encodeComponent(targetUrl)}';
     
-    final response = await http.get(Uri.parse(proxiedUrl));
+    final response = await http.get(Uri.parse(targetUrl));
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
       final items = data['data'];
